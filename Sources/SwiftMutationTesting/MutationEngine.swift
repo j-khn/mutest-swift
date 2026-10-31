@@ -63,17 +63,23 @@ private final class MutationRunResults: @unchecked Sendable {
 private final class MutationProgress: @unchecked Sendable {
     private let lock = NSLock()
     private let total: Int
+    private let generatedMutantCount: Int
+    private let sourceFileCount: Int
+    private let suppressedCount: Int
     private var completed: Int
 
-    init(total: Int, completed: Int) {
+    init(total: Int, generatedMutantCount: Int, sourceFileCount: Int, suppressedCount: Int, completed: Int) {
         self.total = total
+        self.generatedMutantCount = generatedMutantCount
+        self.sourceFileCount = sourceFileCount
+        self.suppressedCount = suppressedCount
         self.completed = min(total, max(0, completed))
     }
 
     func announceStart() {
         lock.lock(); defer { lock.unlock() }
-        guard total > 0 else { return }
-        let line = "[mutest-swift] Mutants: \(completed)/\(total) already completed; processing the remainder.\n"
+        let remaining = max(0, total - completed)
+        let line = "[mutest-swift] Scope: \(sourceFileCount) source files, \(generatedMutantCount) mutants; \(suppressedCount) suppressed, \(completed) cached, \(remaining) remaining.\n"
         try? FileHandle.standardOutput.write(contentsOf: Data(line.utf8))
     }
 
@@ -254,6 +260,9 @@ public struct MutationEngine: Sendable {
         let remaining = runnable.filter { records[$0.id] == nil }
         let progress = MutationProgress(
             total: runnable.count,
+            generatedMutantCount: candidates.count,
+            sourceFileCount: Set(sourceFiles.map { relativePath($0, root: root) }).count,
+            suppressedCount: candidates.count - runnable.count,
             completed: runnable.filter { records[$0.id] != nil }.count
         )
         progress.announceStart()

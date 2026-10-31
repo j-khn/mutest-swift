@@ -40,9 +40,12 @@ enum SwiftMutationTestingCLI {
             let configuration = try makeConfiguration(arguments)
             let buildSettings = try xcodebuildArguments(arguments, projectKind: configuration.project.kind)
             let output = arguments.first("--output").map { URL(fileURLWithPath: $0, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL }
+            let runStartedAt = Date()
             let report = try MutationEngine(xcodebuildArguments: buildSettings).run(configuration: configuration, outputDirectory: output)
+            let runDuration = Date().timeIntervalSince(runStartedAt)
             let score = report.summary.score.map { String(format: "%.1f%%", $0 * 100) } ?? "n/a"
             print("Mutation score: \(score) · killed \(report.summary.killed) · survived \(report.summary.survived) · no coverage \(report.summary.noCoverage) · timeout \(report.summary.timedOut) · unbuildable \(report.summary.unbuildable)")
+            print("[mutest-swift] Complete: \(report.summary.generated) mutants across \(report.scope.sources.count) source files in \(formatDuration(runDuration)).")
             let projectURL = URL(fileURLWithPath: configuration.project.path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
             let projectRoot = configuration.project.kind == .swiftPackage ? projectURL : projectURL.deletingLastPathComponent()
             let configuredOutput = configuration.output.directory.map { URL(fileURLWithPath: $0, relativeTo: projectRoot).standardizedFileURL }
@@ -191,6 +194,16 @@ enum SwiftMutationTestingCLI {
     static func fraction(_ text: String, name: String) throws -> Double {
         guard let value = Double(text), value >= 0, value <= 1 else { throw CLIError.usage("\(name) must be between 0 and 1.") }
         return value
+    }
+
+    static func formatDuration(_ interval: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(interval.rounded()))
+        let hours = totalSeconds / 3_600
+        let minutes = (totalSeconds % 3_600) / 60
+        let seconds = totalSeconds % 60
+        if hours > 0 { return "\(hours)h \(minutes)m \(seconds)s" }
+        if minutes > 0 { return "\(minutes)m \(seconds)s" }
+        return "\(seconds)s"
     }
 
     static let help = """
