@@ -346,7 +346,7 @@ public struct MutationEngine: Sendable {
                         if result.timedOut { record.status = .timeout }
                         else if !activated { record.status = .noCoverage }
                         else { record.status = result.exitCode == 0 ? .survived : .killed }
-                        if result.stoppedEarly { record.message += " Stopped after an activated test failure." }
+                        if result.stoppedEarly { record.message = (record.message ?? "") + " Stopped after an activated test failure." }
                         var retryWarnings: [IntegrityWarning] = []
                         if executedTestCount(in: result.output) == 0 && !result.stoppedEarly {
                             retryWarnings.append(.init(code: "testsNotExecuted", message: "The selected test command reported zero executed tests.", mutantId: candidate.id))
@@ -493,7 +493,7 @@ public struct MutationEngine: Sendable {
                                 if let activation { env["SWIFT_MUTATION_ACTIVATION_FILE"] = activation.path }
                                 let result = try runner.run(adapter.command(root: workerRoot, phase: .testWithoutBuilding, resolved: selection, environment: env, timeout: TimeInterval(configuration.timeouts.mutantSeconds), output: log, stopOnActivatedTestFailure: true, activationID: candidate.id, activationFile: activation))
                                 let wasActivated = self.activationContains(candidate.id, file: activation, output: result.output)
-                                record.durationSeconds += result.elapsed
+                                record.durationSeconds = (record.durationSeconds ?? 0) + result.elapsed
                                 record.activated = wasActivated
                                 if result.timedOut { record.status = .timeout }
                                 else if !wasActivated { record.status = .noCoverage }
