@@ -164,6 +164,48 @@ struct MutationEngineIntegrationTests {
         #expect(report.qualityGate?.passed == false)
     }
 
+    @Test("runs parallel SwiftPM mutants in isolated scratch directories and retries timeouts")
+    func parallelSwiftPMTimeoutRetry() throws {
+        let fixture = try makePackage(
+            source: """
+            public enum Rules {
+                public static func left(_ value: Bool) -> Bool { value && true }
+                public static func right(_ value: Bool) -> Bool { value || false }
+            }
+            """,
+            tests: """
+            import Foundation
+            import Logic
+            import Testing
+
+            @Test("exercises both logical rules")
+            func exercisesRules() {
+                #expect(Rules.left(true))
+                #expect(!Rules.right(false))
+                if ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"] != nil {
+                    Thread.sleep(forTimeInterval: 2.2)
+                }
+            }
+            """
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let output = fixture.root.deletingLastPathComponent().appendingPathComponent("mutation-output-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: output) }
+        var configuration = configuration(for: fixture.root, operators: [.logical])
+        configuration.parallelism = 2
+        configuration.timeouts.mutantSeconds = 2
+        configuration.timeouts.retryMultiplier = 2
+
+        let report = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+        #expect(report.mutants.count == 2)
+        #expect(report.summary.timedOut == 0)
+        #expect(report.summary.survived == 2)
+        #expect(report.summary.noCoverage == 0)
+        #expect(report.integrityWarnings.isEmpty)
+        #expect(report.mutants.allSatisfy { $0.activated && $0.status == .survived })
+        #expect(report.mutants.allSatisfy { $0.message?.contains("retried in isolation") == true })
+    }
+
     private func configuration(for packageRoot: URL, testName: String? = nil, operators: [MutationOperator]) -> RunConfiguration {
         .init(
             project: .init(kind: .swiftPackage, path: packageRoot.path),

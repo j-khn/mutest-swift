@@ -1,6 +1,6 @@
 # Swift Mutation Testing
 
-A native Swift mutation-testing engine and CLI implementing the language-neutral `mutation-testing-spec` 1.x contract. This package owns SwiftSyntax rewrites and SwiftPM/Xcode execution.
+A native Swift mutation-testing engine and CLI implementing the language-neutral `mutest-core` 1.x contract. This package owns SwiftSyntax rewrites and SwiftPM/Xcode execution.
 
 ## Status
 
@@ -19,7 +19,7 @@ swift run swift-mutation-testing run --project . \
 
 Use `--suite` and `--test` for native test identifiers. Omitting all test selectors runs all tests in the configured test target. Explicit selectors that cannot be resolved fail instead of expanding to all tests. Xcode test identifiers preserve parameter labels for parameterized declarations and are checked for nonzero execution so `xcodebuild` cannot silently accept a selector that matched no tests. `--source` limits mutation locations; test selection remains independent so callers can run the full suite to detect ripple effects.
 
-`--project-kind swift-package|xcode-project|xcode-workspace`, `--scheme`, `--test-target`, and `--destination` configure the native adapter. Baseline and mutant builds run in a disposable copy of the project, keeping build products and project-local test side effects out of the source checkout. For Xcode tests, runtime activation markers are captured from the test process output, avoiding assumptions about simulator clone or app-container paths. Timeouts are independently configurable with `--build-timeout`, `--baseline-timeout`, and `--mutant-timeout` (seconds). `--parallelism` controls isolated workers. `--output` selects the report directory. The append-only journal defaults to that directory; `--cache-path` selects a separate cache directory, `--no-resume` skips cached verdicts, and `--no-cache` disables journal reads and writes.
+`--project-kind swift-package|xcode-project|xcode-workspace`, `--scheme`, `--test-target`, and `--destination` configure the native adapter. Baseline and mutant builds run in a disposable copy of the project, keeping build products and project-local test side effects out of the source checkout. For Xcode tests, runtime activation markers are captured from the test process output, avoiding assumptions about simulator clone or app-container paths. Timeouts are independently configurable with `--build-timeout`, `--baseline-timeout`, and `--mutant-timeout` (seconds). `--parallelism` controls isolated workers. SwiftPM workers receive independent scratch directories cloned from the completed schema build, so concurrent test commands do not contend on SwiftPM's shared build lock. Xcode and XCTest runs remain serial. `--output` selects the report directory. The append-only journal defaults to that directory; `--cache-path` selects a separate cache directory, `--no-resume` skips cached verdicts, and `--no-cache` disables journal reads and writes.
 
 JSON run configuration supports the same settings, including output formats and suppression behavior. For example:
 
@@ -38,6 +38,8 @@ JSON run configuration supports the same settings, including output formats and 
 When `requireReason` is enabled, a suppression directive without a reason does not suppress its mutant. JSON output writes both the canonical `report.json` and `stryker.json`; Markdown output writes `report.md`.
 
 For `maximumScoreDrop`, the baseline must have the same source list and test selection as the current run; a scope mismatch fails the gate instead of comparing unrelated scores. `failOnNewSurvivors` compares stable mutant IDs, so it can compare a changed source selection with a broader baseline report.
+
+The scheduled mutation workflow downloads the previous successful scheduled report on the same branch and fails on new survivors or a score drop greater than 5 percentage points. The first scheduled run has no baseline and skips those comparisons. Manual full runs use the most recent scheduled report when one exists; changed-scope runs skip baseline comparison. The report artifact remains available for manual inspection.
 
 ## Engine layout
 

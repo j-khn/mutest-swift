@@ -73,6 +73,25 @@ struct SelectorTests {
         #expect(command.arguments.contains("--build-tests"))
     }
 
+    @Test("passes an isolated SwiftPM scratch path to mutation test commands")
+    func packageMutationUsesWorkerScratchPath() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let scratch = root.appendingPathComponent("worker-build")
+        let adapter = NativeTestAdapter(project: .init(kind: .swiftPackage, path: "."), selection: .init())
+        let command = try adapter.command(
+            root: root,
+            phase: .testWithoutBuilding,
+            resolved: .init(identifiers: [], allTests: true),
+            environment: ["SWIFT_MUTATION_ID": "mutant"],
+            timeout: 10,
+            output: root.appendingPathComponent("test.log"),
+            scratchPath: scratch
+        )
+        #expect(command.arguments.contains("--skip-build"))
+        #expect(command.arguments.contains("--scratch-path"))
+        #expect(command.arguments.contains(scratch.path))
+    }
+
     @Test("preserves Xcode parameter labels for parameterized Swift Testing declarations")
     func parameterizedXcodeIdentifier() throws {
         let root = try fixtureRoot()

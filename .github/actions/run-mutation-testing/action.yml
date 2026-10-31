@@ -84,6 +84,14 @@ inputs:
     description: Previous report JSON used for score-drop and new-survivor gates
     required: false
     default: ""
+  maximum-score-drop:
+    description: Maximum mutation-score decrease from the supplied baseline, from 0 to 1
+    required: false
+    default: ""
+  fail-on-new-survivors:
+    description: Fail when a mutant survives now but was not in the supplied baseline's survivor set
+    required: false
+    default: "false"
   maximum-integrity-warnings:
     description: Maximum allowed integrity warnings
     required: false
@@ -120,6 +128,8 @@ runs:
         INPUT_MUTANT_TIMEOUT: ${{ inputs.mutant-timeout }}
         INPUT_MINIMUM_SCORE: ${{ inputs.minimum-score }}
         INPUT_BASELINE_REPORT: ${{ inputs.baseline-report }}
+        INPUT_MAXIMUM_SCORE_DROP: ${{ inputs.maximum-score-drop }}
+        INPUT_FAIL_ON_NEW_SURVIVORS: ${{ inputs.fail-on-new-survivors }}
         INPUT_MAXIMUM_INTEGRITY_WARNINGS: ${{ inputs.maximum-integrity-warnings }}
         INPUT_OUTPUT_PATH: ${{ inputs.output-path }}
       run: |
@@ -142,6 +152,8 @@ runs:
         [[ -n "$INPUT_DESTINATION" ]] && args+=(--destination "$INPUT_DESTINATION")
         [[ -n "$INPUT_MINIMUM_SCORE" ]] && args+=(--minimum-score "$INPUT_MINIMUM_SCORE")
         [[ -n "$INPUT_BASELINE_REPORT" ]] && args+=(--baseline-report "$INPUT_BASELINE_REPORT")
+        [[ -n "$INPUT_MAXIMUM_SCORE_DROP" ]] && args+=(--maximum-score-drop "$INPUT_MAXIMUM_SCORE_DROP")
+        [[ "$INPUT_FAIL_ON_NEW_SURVIVORS" == "true" ]] && args+=(--fail-on-new-survivors)
         while IFS= read -r value; do [[ -n "$value" ]] && args+=(--source "$value"); done <<< "$INPUT_SOURCE"
         while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-file "$value"); done <<< "$INPUT_TEST_FILE"
         while IFS= read -r value; do [[ -n "$value" ]] && args+=(--suite "$value"); done <<< "$INPUT_SUITE"

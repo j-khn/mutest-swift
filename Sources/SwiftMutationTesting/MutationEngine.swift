@@ -1,5 +1,8 @@
 import Foundation
 import MutationTestingSpec
+#if canImport(Darwin)
+import Darwin
+#endif
 
 public enum MutationEngineError: Error, CustomStringConvertible {
     case invalidProject(String)
@@ -50,6 +53,29 @@ private final class MutationRunResults: @unchecked Sendable {
     func snapshot() -> (records: [String: MutantRecord], warnings: [IntegrityWarning], retries: [MutationCandidate]) {
         lock.lock(); defer { lock.unlock() }
         return (records, warnings, retries)
+    }
+}
+
+private final class WorkerScratchPool: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var available: [URL]
+
+    init(scratchPaths: [URL]) {
+        available = scratchPaths
+    }
+
+    func acquire() -> URL {
+        condition.lock()
+        defer { condition.unlock() }
+        while available.isEmpty { condition.wait() }
+        return available.removeFirst()
+    }
+
+    func release(_ scratchPath: URL) {
+        condition.lock()
+        available.append(scratchPath)
+        condition.signal()
+        condition.unlock()
     }
 }
 
@@ -183,7 +209,17 @@ public struct MutationEngine: Sendable {
                         try clean.write(to: sandbox.appendingPathComponent(relative), atomically: true, encoding: .utf8)
                     }
                 } else {
-                    let concurrency = executionConcurrency(root: root, projectKind: configuration.project.kind, requested: configuration.parallelism)
+                    let concurrency = executionConcurrency(
+                        root: root,
+                        projectKind: configuration.project.kind,
+                        requested: configuration.parallelism,
+                        candidateCount: schemaCandidates.count
+                    )
+                    let workerScratchPool = try makeWorkerScratchPool(
+                        sandbox: sandbox,
+                        projectKind: configuration.project.kind,
+                        workerCount: concurrency
+                    )
                     let parallelResults = MutationRunResults()
                     let lockedJournal = configuration.cache.enabled ? LockedJournal(url: journal) : nil
                     let currentActivationDirectory = activationDirectory
@@ -192,6 +228,10 @@ public struct MutationEngine: Sendable {
                     queue.maxConcurrentOperationCount = concurrency
                     for candidate in schemaCandidates where records[candidate.id] == nil {
                         queue.addOperation {
+                            let workerScratch = workerScratchPool?.acquire()
+                            defer {
+                                if let workerScratch { workerScratchPool?.release(workerScratch) }
+                            }
                             do {
                                 let cacheKey = inputDigest + ":" + candidate.id
                                 let activation = self.activationFile(for: candidate, in: currentActivationDirectory, useFile: currentActivationDirectory != nil)
@@ -199,7 +239,15 @@ public struct MutationEngine: Sendable {
                                 var env = ["SWIFT_MUTATION_ID": candidate.id]
                                 if let activation { env["SWIFT_MUTATION_ACTIVATION_FILE"] = activation.path }
                                 let log = logs.appendingPathComponent("mutant-\(candidate.id).log")
-                                let command = try adapter.command(root: sandbox, phase: .testWithoutBuilding, resolved: selection, environment: env, timeout: TimeInterval(configuration.timeouts.mutantSeconds), output: log)
+                                let command = try adapter.command(
+                                    root: sandbox,
+                                    phase: .testWithoutBuilding,
+                                    resolved: selection,
+                                    environment: env,
+                                    timeout: TimeInterval(configuration.timeouts.mutantSeconds),
+                                    output: log,
+                                    scratchPath: workerScratch
+                                )
                                 let result = try runner.run(command)
                                 let activated = self.activationContains(candidate.id, file: activation, output: result.output)
                                 var record = candidate.record
@@ -230,13 +278,17 @@ public struct MutationEngine: Sendable {
                     records.merge(completed.records) { _, new in new }
                     warnings += completed.warnings
                     for candidate in completed.retries {
+                        let retryScratch = workerScratchPool?.acquire()
+                        defer {
+                            if let retryScratch { workerScratchPool?.release(retryScratch) }
+                        }
                         let activation = activationFile(for: candidate, in: activationDirectory, useFile: activationDirectory != nil)
                         if let activation { try? FileManager.default.removeItem(at: activation) }
                         var env = ["SWIFT_MUTATION_ID": candidate.id]
                         if let activation { env["SWIFT_MUTATION_ACTIVATION_FILE"] = activation.path }
                         let log = logs.appendingPathComponent("retry-isolated-\(candidate.id).log")
                         let retryTimeout = TimeInterval(configuration.timeouts.mutantSeconds) * configuration.timeouts.retryMultiplier
-                        let command = try adapter.command(root: sandbox, phase: .testWithoutBuilding, resolved: selection, environment: env, timeout: retryTimeout, output: log)
+                        let command = try adapter.command(root: sandbox, phase: .testWithoutBuilding, resolved: selection, environment: env, timeout: retryTimeout, output: log, scratchPath: retryScratch)
                         let result = try runner.run(command)
                         let activated = activationContains(candidate.id, file: activation, output: result.output)
                         var record = records[candidate.id] ?? candidate.record
@@ -380,7 +432,7 @@ public struct MutationEngine: Sendable {
         }
     }
 
-    private func executionConcurrency(root: URL, projectKind: ProjectKind, requested: Int) -> Int {
+    private func executionConcurrency(root: URL, projectKind: ProjectKind, requested: Int, candidateCount: Int) -> Int {
         guard projectKind == .swiftPackage else { return 1 }
         let testsRoot = root.appendingPathComponent("Tests", isDirectory: true)
         let paths = (try? FileManager.default.subpathsOfDirectory(atPath: testsRoot.path))?.filter { $0.hasSuffix(".swift") } ?? []
@@ -389,7 +441,41 @@ public struct MutationEngine: Sendable {
             guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
             if text.contains("import XCTest") || text.contains("XCTestCase") { return 1 }
         }
-        return max(1, requested)
+        return min(max(1, requested), max(1, candidateCount))
+    }
+
+    private func makeWorkerScratchPool(sandbox: URL, projectKind: ProjectKind, workerCount: Int) throws -> WorkerScratchPool? {
+        guard projectKind == .swiftPackage, workerCount > 1 else { return nil }
+        let buildDirectory = sandbox.appendingPathComponent(".build", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: buildDirectory.path) else {
+            throw MutationEngineError.invalidProject("SwiftPM completed its schema build without producing .build; worker isolation cannot continue.")
+        }
+        let workerDirectory = sandbox
+            .appendingPathComponent(".swift-mutation-testing", isDirectory: true)
+            .appendingPathComponent("worker-builds", isDirectory: true)
+        try FileManager.default.createDirectory(at: workerDirectory, withIntermediateDirectories: true)
+        var scratchPaths: [URL] = []
+        for index in 0..<workerCount {
+            let destination = workerDirectory.appendingPathComponent("worker-\(index)", isDirectory: true)
+            try cloneBuildDirectory(from: buildDirectory, to: destination)
+            scratchPaths.append(destination)
+        }
+        return WorkerScratchPool(scratchPaths: scratchPaths)
+    }
+
+    private func cloneBuildDirectory(from source: URL, to destination: URL) throws {
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        #if canImport(Darwin)
+        let flags = copyfile_flags_t(COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_CLONE)
+        let result = source.path.withCString { sourcePath in
+            destination.path.withCString { destinationPath in
+                copyfile(sourcePath, destinationPath, nil, flags)
+            }
+        }
+        if result == 0 { return }
+        try? FileManager.default.removeItem(at: destination)
+        #endif
+        try FileManager.default.copyItem(at: source, to: destination)
     }
 
     private func discoverSources(root: URL, requested: [String], kind: ProjectKind) throws -> [URL] {

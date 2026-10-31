@@ -164,7 +164,7 @@ public struct NativeTestAdapter: Sendable {
     public var selection: TestSelection
     public init(project: ProjectConfiguration, selection: TestSelection) { self.project = project; self.selection = selection }
 
-    public func command(root: URL, phase: TestPhase, resolved: ResolvedTestSelection, environment: [String: String], timeout: TimeInterval, output: URL) throws -> CommandSpec {
+    public func command(root: URL, phase: TestPhase, resolved: ResolvedTestSelection, environment: [String: String], timeout: TimeInterval, output: URL, scratchPath: URL? = nil) throws -> CommandSpec {
         switch project.kind {
         case .swiftPackage:
             let args: [String]
@@ -174,6 +174,9 @@ public struct NativeTestAdapter: Sendable {
             case .baseline: args = ["test"]
             }
             var finalArgs = args
+            if phase == .testWithoutBuilding, let scratchPath {
+                finalArgs += ["--scratch-path", scratchPath.path]
+            }
             if phase != .buildForTesting, !resolved.allTests, !resolved.identifiers.isEmpty {
                 let pattern = resolved.identifiers.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
                 finalArgs += ["--filter", pattern]
