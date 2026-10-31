@@ -159,7 +159,31 @@ runs:
         while IFS= read -r value; do [[ -n "$value" ]] && args+=(--suite "$value"); done <<< "$INPUT_SUITE"
         while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test "$value"); done <<< "$INPUT_TEST"
         output="$GITHUB_WORKSPACE/$INPUT_OUTPUT_PATH"
-        swift run --package-path "$engine_path" swift-mutation-testing "${args[@]}" --output "$output"
+        tool_binary=""
+        tool_cache_path=""
+        if [[ -n "$INPUT_CACHE_PATH" && "$INPUT_NO_CACHE" != "true" ]]; then
+          toolchain_fingerprint="$( { xcode-select -p; swift --version; } | shasum -a 256 | awk '{print $1}')"
+          package_fingerprint="$(cd "$engine_path" && { shasum -a 256 Package.swift Package.resolved; find Sources -type f -name '*.swift' -print | LC_ALL=C sort | while IFS= read -r file; do printf '%s ' "$file"; shasum -a 256 "$file" | awk '{print $1}'; done; } | shasum -a 256 | awk '{print $1}')"
+          tool_cache_path="$cache_path/tool-binaries/$toolchain_fingerprint-$package_fingerprint/swift-mutation-testing"
+          if [[ -f "$tool_cache_path" ]]; then
+            chmod +x "$tool_cache_path"
+            if "$tool_cache_path" version >/dev/null 2>&1; then tool_binary="$tool_cache_path"; fi
+          fi
+        fi
+        if [[ -z "$tool_binary" ]]; then
+          swift build --package-path "$engine_path" --product swift-mutation-testing
+          binary_directory="$(swift build --package-path "$engine_path" --show-bin-path)"
+          built_tool="$binary_directory/swift-mutation-testing"
+          if [[ -n "$tool_cache_path" ]]; then
+            mkdir -p "$(dirname "$tool_cache_path")"
+            cp "$built_tool" "$tool_cache_path"
+            chmod +x "$tool_cache_path"
+            tool_binary="$tool_cache_path"
+          else
+            tool_binary="$built_tool"
+          fi
+        fi
+        "$tool_binary" "${args[@]}" --output "$output"
         echo "report-directory=$output" >> "$GITHUB_OUTPUT"
     - name: Add Markdown report to the job summary
       if: always()
