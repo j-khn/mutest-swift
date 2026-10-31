@@ -58,6 +58,58 @@ private final class MutationRunResults: @unchecked Sendable {
     }
 }
 
+/// Writes a small, live progress line to the CLI's stdout while mutant tests run.
+/// Child-process output remains isolated in per-mutant log files.
+private final class MutationProgress: @unchecked Sendable {
+    private let lock = NSLock()
+    private let total: Int
+    private var completed: Int
+
+    init(total: Int, completed: Int) {
+        self.total = total
+        self.completed = min(total, max(0, completed))
+    }
+
+    func announceStart() {
+        lock.lock(); defer { lock.unlock() }
+        guard total > 0 else { return }
+        let line = "[mutest-swift] Mutants: \(completed)/\(total) already completed; processing the remainder.\n"
+        try? FileHandle.standardOutput.write(contentsOf: Data(line.utf8))
+    }
+
+    func recordCompletion(candidate: MutationCandidate, status: MutantStatus) {
+        lock.lock(); defer { lock.unlock() }
+        guard total > 0 else { return }
+        completed = min(total, completed + 1)
+        let filename = URL(fileURLWithPath: candidate.source).lastPathComponent
+        let line = "\(symbol(for: status)) \(completed)/\(total)  \(operatorName(candidate.operatorID))  \(filename):\(candidate.line)\n"
+        try? FileHandle.standardOutput.write(contentsOf: Data(line.utf8))
+    }
+
+    private func symbol(for status: MutantStatus) -> String {
+        switch status {
+        case .killed: "✓"
+        case .survived: "✗"
+        case .noCoverage: "?"
+        case .timeout: "⌛"
+        case .unbuildable: "⚠"
+        case .suppressed: "⊘"
+        }
+    }
+
+    private func operatorName(_ operatorID: MutationOperator) -> String {
+        switch operatorID {
+        case .relational: "RelationalOperatorReplacement"
+        case .boolean: "BooleanLiteralReplacement"
+        case .logical: "LogicalOperatorReplacement"
+        case .arithmetic: "ArithmeticOperatorReplacement"
+        case .negateConditional: "NegateConditional"
+        case .swapTernary: "SwapTernary"
+        case .removeSideEffects: "RemoveSideEffects"
+        }
+    }
+}
+
 private final class WorkerScratchPool: @unchecked Sendable {
     private let condition = NSCondition()
     private var available: [URL]
@@ -200,6 +252,11 @@ public struct MutationEngine: Sendable {
             }
         }
         let remaining = runnable.filter { records[$0.id] == nil }
+        let progress = MutationProgress(
+            total: runnable.count,
+            completed: runnable.filter { records[$0.id] != nil }.count
+        )
+        progress.announceStart()
         var historicalDurations: [String: TimeInterval] = [:]
         for entry in cached {
             if let duration = entry.record.durationSeconds { historicalDurations[entry.record.id] = duration }
@@ -273,6 +330,13 @@ public struct MutationEngine: Sendable {
                     queue.maxConcurrentOperationCount = concurrency
                     for candidate in schemaCandidates.filter({ records[$0.id] == nil }).sorted(by: slowestFirst) {
                         queue.addOperation {
+                            var waitingForRetry = false
+                            var progressStatus = MutantStatus.unbuildable
+                            defer {
+                                if !waitingForRetry {
+                                    progress.recordCompletion(candidate: candidate, status: progressStatus)
+                                }
+                            }
                             let workerScratch = workerScratchPool?.acquire()
                             defer {
                                 if let workerScratch { workerScratchPool?.release(workerScratch) }
@@ -304,19 +368,26 @@ public struct MutationEngine: Sendable {
                                 if result.timedOut { record.status = .timeout }
                                 else if !activated { record.status = .noCoverage }
                                 else { record.status = result.exitCode == 0 ? .survived : .killed }
+                                progressStatus = record.status
                                 if result.stoppedEarly { record.message = "Stopped after a selected test failed while this mutant was active." }
-                                let warning: IntegrityWarning? = executedTestCount(in: result.output) == 0 && !result.stoppedEarly
+                                // An activation marker proves at least one selected test reached
+                                // the mutated code. A killed mutant may stop before Swift Testing
+                                // prints its final executed-test count, so do not flag it as a
+                                // zero-test run merely because that summary is absent.
+                                let warning: IntegrityWarning? = executedTestCount(in: result.output) == 0 && !result.stoppedEarly && !activated
                                     ? .init(code: "testsNotExecuted", message: "The selected test command reported zero executed tests.", mutantId: candidate.id)
                                     : (!activated && result.exitCode != 0 && !result.timedOut
                                         ? .init(code: "testsFailedWithoutActivation", message: "Test execution failed but the mutation was not activated; verdict is noCoverage.", mutantId: candidate.id)
                                         : nil)
                                 let retry = result.timedOut && concurrency > 1 && configuration.timeouts.parallelRetry ? candidate : nil
+                                waitingForRetry = retry != nil
                                 parallelResults.store(record, warning: warning, retry: retry)
                                 try lockedJournal?.append(.init(cacheKey: cacheKey, record: record, warnings: warning.map { [$0] } ?? []))
                             } catch {
                                 var record = candidate.record
                                 record.status = .unbuildable
                                 record.message = "Could not execute mutant: \(error)"
+                                progressStatus = record.status
                                 parallelResults.store(record, warning: .init(code: "mutantExecutionFailed", message: String(describing: error), mutantId: candidate.id))
                             }
                         }
@@ -349,7 +420,7 @@ public struct MutationEngine: Sendable {
                         else { record.status = result.exitCode == 0 ? .survived : .killed }
                         if result.stoppedEarly { record.message = (record.message ?? "") + " Stopped after an activated test failure." }
                         var retryWarnings: [IntegrityWarning] = []
-                        if executedTestCount(in: result.output) == 0 && !result.stoppedEarly {
+                        if executedTestCount(in: result.output) == 0 && !result.stoppedEarly && !activated {
                             retryWarnings.append(.init(code: "testsNotExecuted", message: "The selected test command reported zero executed tests.", mutantId: candidate.id))
                         } else if !activated && result.exitCode != 0 && !result.timedOut {
                             retryWarnings.append(.init(code: "testsFailedWithoutActivation", message: "Isolated retry failed but the mutation was not activated; verdict is noCoverage.", mutantId: candidate.id))
@@ -359,6 +430,7 @@ public struct MutationEngine: Sendable {
                         if configuration.cache.enabled {
                             try appendJournal(.init(cacheKey: inputDigest + ":" + candidate.id, record: record, warnings: retryWarnings), to: journal)
                         }
+                        progress.recordCompletion(candidate: candidate, status: record.status)
                     }
                 }
             }
@@ -413,7 +485,7 @@ public struct MutationEngine: Sendable {
                         else { record.status = result.exitCode == 0 ? .survived : .killed }
                         if result.stoppedEarly { record.message = "Stopped after a selected test failed while this mutant was active." }
                         var mutantWarnings: [IntegrityWarning] = []
-                        if executedTestCount(in: result.output) == 0 && !result.stoppedEarly {
+                        if executedTestCount(in: result.output) == 0 && !result.stoppedEarly && !activated {
                             mutantWarnings.append(.init(code: "testsNotExecuted", message: "The selected test command reported zero executed tests.", mutantId: candidate.id))
                         } else if !activated && result.exitCode != 0 && !result.timedOut {
                             mutantWarnings.append(.init(code: "testsFailedWithoutActivation", message: "Test execution failed but the mutation was not activated; verdict is noCoverage.", mutantId: candidate.id))
@@ -423,6 +495,7 @@ public struct MutationEngine: Sendable {
                         if configuration.cache.enabled {
                             try appendJournal(.init(cacheKey: inputDigest + ":" + candidate.id, record: record, warnings: mutantWarnings), to: journal)
                         }
+                        progress.recordCompletion(candidate: candidate, status: record.status)
                     }
                 }
                 try runSchemaBatch(schemaCandidates.sorted(by: slowestFirst))
@@ -466,7 +539,11 @@ public struct MutationEngine: Sendable {
                 for candidate in runnableIsolated {
                     queue.addOperation {
                         let workerRoot = workerPool.acquire()
-                        defer { workerPool.release(workerRoot) }
+                        var progressStatus = MutantStatus.unbuildable
+                        defer {
+                            workerPool.release(workerRoot)
+                            progress.recordCompletion(candidate: candidate, status: progressStatus)
+                        }
                         let original = try? String(contentsOf: sourceByRelative[candidate.source]!, encoding: .utf8)
                         let relativeFile = workerRoot.appendingPathComponent(candidate.source)
                         defer {
@@ -499,8 +576,9 @@ public struct MutationEngine: Sendable {
                                 if result.timedOut { record.status = .timeout }
                                 else if !wasActivated { record.status = .noCoverage }
                                 else { record.status = result.exitCode == 0 ? .survived : .killed }
+                                progressStatus = record.status
                                 var mutantWarnings: [IntegrityWarning] = []
-                                if executedTestCount(in: result.output) == 0 && !result.stoppedEarly {
+                                if executedTestCount(in: result.output) == 0 && !result.stoppedEarly && !wasActivated {
                                     mutantWarnings.append(.init(code: "testsNotExecuted", message: "The selected test command reported zero executed tests.", mutantId: candidate.id))
                                 } else if !wasActivated && result.exitCode != 0 && !result.timedOut {
                                     mutantWarnings.append(.init(code: "testsFailedWithoutActivation", message: "Test execution failed but the mutation was not activated; verdict is noCoverage.", mutantId: candidate.id))
@@ -520,6 +598,7 @@ public struct MutationEngine: Sendable {
                             var record = candidate.record
                             record.status = .unbuildable
                             record.message = "Could not execute isolated mutant: \(error)"
+                            progressStatus = record.status
                             isolatedResults.store(record, warning: .init(code: "mutantExecutionFailed", message: String(describing: error), mutantId: candidate.id))
                         }
                     }
