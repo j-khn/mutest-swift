@@ -1,0 +1,76 @@
+name: Mutation testing
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: Full repository campaign, or only the supplied changed sources/tests
+        type: choice
+        options: [full, changed]
+        default: full
+      source:
+        description: Changed Swift source paths, one per line (used for changed scope)
+        type: string
+        required: false
+      test_file:
+        description: Test file paths to select, one per line (empty runs the full test target)
+        type: string
+        required: false
+      test_suite:
+        description: Suite names to select, one per line
+        type: string
+        required: false
+      test_name:
+        description: Test function or Swift Testing display names, one per line
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  mutation-testing:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, macos]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate changed source scope
+        if: github.event_name == 'workflow_dispatch' && inputs.scope == 'changed'
+        shell: bash
+        env:
+          SOURCE_PATHS: ${{ inputs.source }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SOURCE_PATHS//[[:space:]]/}" ]]; then
+            echo "Changed scope requires at least one source path." >&2
+            exit 1
+          fi
+      - name: Select Xcode toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]]; then
+            echo "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer" >> "$GITHUB_ENV"
+            export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+          fi
+          xcode-select -p
+          xcodebuild -version
+          swift --version
+      - name: Run full or targeted mutation campaign
+        uses: ./.github/actions/run-mutation-testing
+        with:
+          project-path: .
+          project-kind: swift-package
+          source: ${{ github.event_name == 'workflow_dispatch' && inputs.scope == 'changed' && inputs.source || '' }}
+          test-file: ${{ github.event_name == 'workflow_dispatch' && inputs.scope == 'changed' && inputs.test_file || '' }}
+          suite: ${{ github.event_name == 'workflow_dispatch' && inputs.scope == 'changed' && inputs.test_suite || '' }}
+          test: ${{ github.event_name == 'workflow_dispatch' && inputs.scope == 'changed' && inputs.test_name || '' }}
+          operator-tier: experimental
+          parallelism: "2"
+          build-timeout: "600"
+          baseline-timeout: "300"
+          mutant-timeout: "120"
+          maximum-integrity-warnings: "0"
+          output-path: .swift-mutation-testing

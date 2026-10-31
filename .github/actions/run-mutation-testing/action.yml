@@ -1,0 +1,169 @@
+name: Run Swift mutation testing
+description: Run the Swift mutation CLI, add its Markdown report to the job summary, and upload reports and logs.
+inputs:
+  project-path:
+    description: Swift package root or .xcodeproj/.xcworkspace path
+    required: true
+  project-kind:
+    description: swift-package, xcode-project, or xcode-workspace
+    required: false
+    default: swift-package
+  source:
+    description: Source files/directories to mutate, one relative path per line; empty selects all Swift source
+    required: false
+    default: ""
+  test-file:
+    description: Test files to run, one path per line; empty plus no other selector runs all tests
+    required: false
+    default: ""
+  suite:
+    description: Test suite names, one per line
+    required: false
+    default: ""
+  test:
+    description: Test function or custom Swift Testing name, one per line
+    required: false
+    default: ""
+  scheme:
+    description: Xcode scheme
+    required: false
+    default: ""
+  test-target:
+    description: Xcode test target whose suite should be selected
+    required: false
+    default: ""
+  destination:
+    description: xcodebuild destination
+    required: false
+    default: ""
+  operator-tier:
+    description: conservative, default, experimental, or all
+    required: false
+    default: experimental
+  parallelism:
+    description: Mutation test workers (XCTest and Xcode simulator runs are serialized)
+    required: false
+    default: "2"
+  cache-path:
+    description: Cache journal directory, relative to the project root
+    required: false
+    default: ""
+  no-cache:
+    description: Disable reading and writing the verdict journal
+    required: false
+    default: "false"
+  no-resume:
+    description: Ignore prior journal verdicts but continue writing the journal
+    required: false
+    default: "false"
+  no-suppressions:
+    description: Ignore source suppression comments
+    required: false
+    default: "false"
+  require-suppression-reason:
+    description: Ignore suppression comments that do not include a reason
+    required: false
+    default: "false"
+  build-timeout:
+    description: Build timeout in seconds
+    required: false
+    default: "600"
+  baseline-timeout:
+    description: Baseline test timeout in seconds
+    required: false
+    default: "300"
+  mutant-timeout:
+    description: Per-mutant test timeout in seconds
+    required: false
+    default: "120"
+  minimum-score:
+    description: Minimum mutation score as a fraction from 0 to 1
+    required: false
+    default: ""
+  baseline-report:
+    description: Previous report JSON used for score-drop and new-survivor gates
+    required: false
+    default: ""
+  maximum-integrity-warnings:
+    description: Maximum allowed integrity warnings
+    required: false
+    default: "0"
+  output-path:
+    description: Report directory relative to GITHUB_WORKSPACE
+    required: false
+    default: .swift-mutation-testing
+runs:
+  using: composite
+  steps:
+    - name: Build command arguments
+      id: arguments
+      shell: bash
+      env:
+        INPUT_PROJECT_PATH: ${{ inputs.project-path }}
+        INPUT_PROJECT_KIND: ${{ inputs.project-kind }}
+        INPUT_SOURCE: ${{ inputs.source }}
+        INPUT_TEST_FILE: ${{ inputs.test-file }}
+        INPUT_SUITE: ${{ inputs.suite }}
+        INPUT_TEST: ${{ inputs.test }}
+        INPUT_SCHEME: ${{ inputs.scheme }}
+        INPUT_TEST_TARGET: ${{ inputs.test-target }}
+        INPUT_DESTINATION: ${{ inputs.destination }}
+        INPUT_OPERATOR_TIER: ${{ inputs.operator-tier }}
+        INPUT_PARALLELISM: ${{ inputs.parallelism }}
+        INPUT_CACHE_PATH: ${{ inputs.cache-path }}
+        INPUT_NO_CACHE: ${{ inputs.no-cache }}
+        INPUT_NO_RESUME: ${{ inputs.no-resume }}
+        INPUT_NO_SUPPRESSIONS: ${{ inputs.no-suppressions }}
+        INPUT_REQUIRE_SUPPRESSION_REASON: ${{ inputs.require-suppression-reason }}
+        INPUT_BUILD_TIMEOUT: ${{ inputs.build-timeout }}
+        INPUT_BASELINE_TIMEOUT: ${{ inputs.baseline-timeout }}
+        INPUT_MUTANT_TIMEOUT: ${{ inputs.mutant-timeout }}
+        INPUT_MINIMUM_SCORE: ${{ inputs.minimum-score }}
+        INPUT_BASELINE_REPORT: ${{ inputs.baseline-report }}
+        INPUT_MAXIMUM_INTEGRITY_WARNINGS: ${{ inputs.maximum-integrity-warnings }}
+        INPUT_OUTPUT_PATH: ${{ inputs.output-path }}
+      run: |
+        set -euo pipefail
+        engine_path="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)"
+        project_path="$INPUT_PROJECT_PATH"
+        if [[ "$project_path" != /* ]]; then project_path="$GITHUB_WORKSPACE/$project_path"; fi
+        args=(run --project "$project_path" --project-kind "$INPUT_PROJECT_KIND" --operator-tier "$INPUT_OPERATOR_TIER" --parallelism "$INPUT_PARALLELISM" --build-timeout "$INPUT_BUILD_TIMEOUT" --baseline-timeout "$INPUT_BASELINE_TIMEOUT" --mutant-timeout "$INPUT_MUTANT_TIMEOUT" --maximum-integrity-warnings "$INPUT_MAXIMUM_INTEGRITY_WARNINGS")
+        [[ -n "$INPUT_SCHEME" ]] && args+=(--scheme "$INPUT_SCHEME")
+        [[ -n "$INPUT_TEST_TARGET" ]] && args+=(--test-target "$INPUT_TEST_TARGET")
+        if [[ -n "$INPUT_CACHE_PATH" ]]; then
+          cache_path="$INPUT_CACHE_PATH"
+          if [[ "$cache_path" != /* ]]; then cache_path="$project_path/$cache_path"; fi
+          args+=(--cache-path "$cache_path")
+        fi
+        [[ "$INPUT_NO_CACHE" == "true" ]] && args+=(--no-cache)
+        [[ "$INPUT_NO_RESUME" == "true" ]] && args+=(--no-resume)
+        [[ "$INPUT_NO_SUPPRESSIONS" == "true" ]] && args+=(--no-suppressions)
+        [[ "$INPUT_REQUIRE_SUPPRESSION_REASON" == "true" ]] && args+=(--require-suppression-reason)
+        [[ -n "$INPUT_DESTINATION" ]] && args+=(--destination "$INPUT_DESTINATION")
+        [[ -n "$INPUT_MINIMUM_SCORE" ]] && args+=(--minimum-score "$INPUT_MINIMUM_SCORE")
+        [[ -n "$INPUT_BASELINE_REPORT" ]] && args+=(--baseline-report "$INPUT_BASELINE_REPORT")
+        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--source "$value"); done <<< "$INPUT_SOURCE"
+        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-file "$value"); done <<< "$INPUT_TEST_FILE"
+        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--suite "$value"); done <<< "$INPUT_SUITE"
+        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test "$value"); done <<< "$INPUT_TEST"
+        output="$GITHUB_WORKSPACE/$INPUT_OUTPUT_PATH"
+        swift run --package-path "$engine_path" swift-mutation-testing "${args[@]}" --output "$output"
+        echo "report-directory=$output" >> "$GITHUB_OUTPUT"
+    - name: Add Markdown report to the job summary
+      if: always()
+      shell: bash
+      env:
+        REPORT_PATH: ${{ github.workspace }}/${{ inputs.output-path }}/report.md
+      run: |
+        if [[ -f "$REPORT_PATH" ]]; then
+          cat "$REPORT_PATH" >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "Mutation report was not produced. Check the baseline/build log in the uploaded artifact." >> "$GITHUB_STEP_SUMMARY"
+        fi
+    - name: Upload mutation report and logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: swift-mutation-testing-report
+        path: ${{ github.workspace }}/${{ inputs.output-path }}
+        if-no-files-found: warn

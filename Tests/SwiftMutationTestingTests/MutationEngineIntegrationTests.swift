@@ -1,0 +1,202 @@
+import Foundation
+import Testing
+@testable import SwiftMutationTesting
+import MutationTestingSpec
+
+@Suite("Mutation engine integration")
+struct MutationEngineIntegrationTests {
+    @Test("classifies killed, survived, and no-coverage mutants and resumes cached verdicts")
+    func verdictsAndResume() throws {
+        let fixture = try makePackage(
+            source: """
+            public enum Rules {
+                public static func detected(_ value: Int) -> Int { value + 2 }
+                public static func equivalent(_ value: Int) -> Int { value + 0 }
+                public static func uncovered(_ value: Int) -> Int { value + 1 }
+            }
+            """,
+            tests: """
+            import Logic
+            import Testing
+
+            @Suite struct LogicTests {
+            @Test("checks selected arithmetic rules")
+            func checkRules() {
+                #expect(Rules.detected(3) == 5)
+                #expect(Rules.equivalent(3) == 3)
+            }
+            }
+            """
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let output = fixture.root.deletingLastPathComponent().appendingPathComponent("mutation-output-\(UUID().uuidString)")
+        let cache = fixture.root.deletingLastPathComponent().appendingPathComponent("mutation-cache-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: output)
+            try? FileManager.default.removeItem(at: cache)
+        }
+        var configuration = configuration(for: fixture.root, testName: "checks selected arithmetic rules", operators: [.arithmetic])
+        configuration.cache.path = cache.path
+
+        let first = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+        #expect(first.mutants.count == 3)
+        #expect(first.summary.killed == 1)
+        #expect(first.summary.survived == 1)
+        #expect(first.summary.noCoverage == 1)
+        #expect(first.mutants.first(where: { $0.status == .killed })?.activated == true)
+        #expect(first.mutants.first(where: { $0.status == .survived })?.activated == true)
+        #expect(first.mutants.first(where: { $0.status == .noCoverage })?.activated == false)
+
+        let journal = cache.appendingPathComponent("journal.jsonl")
+        let initialJournalLineCount = try String(contentsOf: journal, encoding: .utf8).split(whereSeparator: \.isNewline).count
+        let resumed = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+        let resumedJournalLineCount = try String(contentsOf: journal, encoding: .utf8).split(whereSeparator: \.isNewline).count
+        #expect(resumed.summary.killed == first.summary.killed)
+        #expect(resumed.summary.survived == first.summary.survived)
+        #expect(resumed.summary.noCoverage == first.summary.noCoverage)
+        #expect(resumedJournalLineCount == initialJournalLineCount)
+
+        try "resource change invalidates the verdict cache".write(
+            to: fixture.root.appendingPathComponent("cache-input.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let invalidated = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+        let invalidatedJournalLineCount = try String(contentsOf: journal, encoding: .utf8).split(whereSeparator: \.isNewline).count
+        #expect(invalidated.summary.killed == first.summary.killed)
+        #expect(invalidatedJournalLineCount > resumedJournalLineCount)
+    }
+
+    @Test("reports type-invalid mutants as unbuildable after isolated fallback")
+    func unbuildableMutant() throws {
+        let fixture = try makePackage(
+            source: #"public enum Rules { public static func join(_ left: String, _ right: String) -> String { left + right } }"#,
+            tests: """
+            import Logic
+            import Testing
+
+            @Suite struct LogicTests {
+            @Test("joins text")
+            func joinsText() { #expect(Rules.join("a", "b") == "ab") }
+            }
+            """
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let output = fixture.root.deletingLastPathComponent().appendingPathComponent("mutation-output-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: output) }
+        let configuration = configuration(for: fixture.root, operators: [.arithmetic])
+
+        let report = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+        #expect(report.summary.unbuildable == 1)
+        #expect(report.summary.score == nil)
+    }
+
+    @Test("aborts without a score when baseline tests fail")
+    func baselineFailure() throws {
+        let fixture = try makePackage(
+            source: "public enum Rules { public static func value() -> Int { 1 } }",
+            tests: """
+            import Logic
+            import Testing
+
+            @Suite struct LogicTests {
+            @Test("fails baseline")
+            func failsBaseline() { #expect(Rules.value() == 99) }
+            }
+            """
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let output = fixture.root.deletingLastPathComponent().appendingPathComponent("mutation-output-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: output) }
+        let configuration = configuration(for: fixture.root, testName: "fails baseline", operators: [.boolean])
+
+        var didAbort = false
+        do {
+            _ = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+        } catch let error as MutationEngineError {
+            if case .baselineFailed(_, let timedOut) = error {
+                didAbort = !timedOut
+            }
+        }
+        #expect(didAbort)
+        #expect(!FileManager.default.fileExists(atPath: output.appendingPathComponent("report.json").path))
+    }
+
+    @Test("records a timeout as detected only after activation is verified")
+    func activatedTimeout() throws {
+        let fixture = try makePackage(
+            source: """
+            public enum Rules {
+                public static func allowed(_ flag: Bool) -> Bool { flag && true }
+                public static func uncovered(_ flag: Bool) -> Bool { flag && false }
+            }
+            """,
+            tests: """
+            import Foundation
+            import Logic
+            import Testing
+
+            @Suite struct LogicTests {
+            @Test("waits only during a mutant run")
+            func waitsDuringMutation() {
+                _ = Rules.allowed(true)
+                if ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"] != nil {
+                    Thread.sleep(forTimeInterval: 4)
+                }
+            }
+            }
+            """
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let output = fixture.root.deletingLastPathComponent().appendingPathComponent("mutation-output-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: output) }
+        var configuration = configuration(for: fixture.root, testName: "waits only during a mutant run", operators: [.logical])
+        configuration.parallelism = 1
+        configuration.timeouts.mutantSeconds = 1
+
+        let report = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+        #expect(report.summary.timedOut == 2)
+        #expect(report.summary.detected == 1)
+        #expect(report.summary.score == 1)
+        #expect(report.mutants.filter(\.activated).count == 1)
+        #expect(report.integrityWarnings.count == 1)
+        #expect(report.integrityWarnings.contains(where: { $0.code == "timeoutWithoutActivation" }))
+        #expect(report.qualityGate?.passed == false)
+    }
+
+    private func configuration(for packageRoot: URL, testName: String? = nil, operators: [MutationOperator]) -> RunConfiguration {
+        .init(
+            project: .init(kind: .swiftPackage, path: packageRoot.path),
+            source: ["Sources/Logic/Rules.swift"],
+            tests: testName.map { .init(tests: [$0]) } ?? .init(),
+            operators: operators,
+            operatorTier: "experimental",
+            timeouts: .init(buildSeconds: 60, baselineSeconds: 60, mutantSeconds: 30),
+            parallelism: 2
+        )
+    }
+
+    private func makePackage(source: String, tests: String) throws -> (root: URL, testFile: URL) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("MutationEngineFixture-\(UUID().uuidString)", isDirectory: true)
+        let sourceDirectory = root.appendingPathComponent("Sources/Logic", isDirectory: true)
+        let testDirectory = root.appendingPathComponent("Tests/LogicTests", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: testDirectory, withIntermediateDirectories: true)
+        try """
+        // swift-tools-version: 6.0
+        import PackageDescription
+        let package = Package(
+            name: "MutationEngineFixture",
+            products: [.library(name: "Logic", targets: ["Logic"])],
+            targets: [
+                .target(name: "Logic"),
+                .testTarget(name: "LogicTests", dependencies: ["Logic"])
+            ]
+        )
+        """.write(to: root.appendingPathComponent("Package.swift"), atomically: true, encoding: .utf8)
+        try source.write(to: sourceDirectory.appendingPathComponent("Rules.swift"), atomically: true, encoding: .utf8)
+        let testFile = testDirectory.appendingPathComponent("RulesTests.swift")
+        try tests.write(to: testFile, atomically: true, encoding: .utf8)
+        return (root, testFile)
+    }
+}
