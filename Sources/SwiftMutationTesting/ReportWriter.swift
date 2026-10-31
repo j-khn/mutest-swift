@@ -1,12 +1,27 @@
 import Foundation
 import MutationTestingSpec
 
+public struct MutationRunSummaryDetails: Sendable {
+    public var testTarget: String?
+    public var baselineTestCount: Int?
+    public var mutantTestRunCount: Int
+    public var totalDurationSeconds: Double
+
+    public init(testTarget: String? = nil, baselineTestCount: Int? = nil, mutantTestRunCount: Int = 0, totalDurationSeconds: Double = 0) {
+        self.testTarget = testTarget
+        self.baselineTestCount = baselineTestCount
+        self.mutantTestRunCount = mutantTestRunCount
+        self.totalDurationSeconds = totalDurationSeconds
+    }
+}
+
 public enum MutationReportWriter {
     public static func write(
         _ report: MutationReport,
         to directory: URL,
         sourceContents: [String: String] = [:],
-        formats: Set<String> = ["console", "json", "markdown"]
+        formats: Set<String> = ["console", "json", "markdown"],
+        runDetails: MutationRunSummaryDetails? = nil
     ) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         if formats.contains("json") {
@@ -16,11 +31,11 @@ public enum MutationReportWriter {
             try encoder.encode(StrykerCompatibleReport(report: report, sourceContents: sourceContents)).write(to: directory.appendingPathComponent("stryker.json"), options: .atomic)
         }
         if formats.contains("markdown") {
-            try markdown(report).write(to: directory.appendingPathComponent("report.md"), atomically: true, encoding: .utf8)
+            try markdown(report, runDetails: runDetails).write(to: directory.appendingPathComponent("report.md"), atomically: true, encoding: .utf8)
         }
     }
 
-    public static func markdown(_ report: MutationReport) -> String {
+    public static func markdown(_ report: MutationReport, runDetails: MutationRunSummaryDetails? = nil) -> String {
         let score = report.summary.score.map { String(format: "%.1f%%", $0 * 100) } ?? "n/a"
         var output = "# Mutation testing report\n\n"
         output += "- **Mutation score:** \(score)\n"
@@ -28,6 +43,32 @@ public enum MutationReportWriter {
         output += "- **Killed:** \(report.summary.killed) · **Survived:** \(report.summary.survived) · **No coverage:** \(report.summary.noCoverage) · **Timeout:** \(report.summary.timedOut)\n"
         output += "- **Unbuildable:** \(report.summary.unbuildable) · **Suppressed:** \(report.summary.suppressed)\n"
         output += "- **Run:** `\(report.runId)` · **Spec:** \(report.specVersion) · **Engine:** \(report.engine.version)\n\n"
+        if let runDetails {
+            output += "## Run summary\n\n"
+            output += "- **Source files selected:** \(report.scope.sources.count)\n"
+            output += "- **Mutants generated:** \(report.summary.generated)\n"
+            let scopeDescription: String
+            if report.scope.allTests {
+                if let target = runDetails.testTarget, !target.isEmpty {
+                    scopeDescription = "All tests in target `\(target)`"
+                } else {
+                    scopeDescription = "All tests in the configured test target"
+                }
+            } else {
+                scopeDescription = "\(report.scope.tests.count) selected test(s)"
+            }
+            if let count = runDetails.baselineTestCount {
+                output += "- **Baseline tests run:** \(count)\n"
+            } else {
+                output += "- **Baseline tests run:** count unavailable\n"
+            }
+            output += "- **Test selection:** \(scopeDescription)\n"
+            if !report.scope.allTests, !report.scope.tests.isEmpty {
+                for test in report.scope.tests.sorted() { output += "  - `\(test)`\n" }
+            }
+            output += "- **Mutant test runs:** \(runDetails.mutantTestRunCount) (a run may stop after an active mutant is killed)\n"
+            output += "- **Total time:** \(formatDuration(runDetails.totalDurationSeconds))\n\n"
+        }
         if let timings = report.timings {
             output += "## Phase timings\n\n"
             output += "| Phase | Seconds |\n|---|---:|\n"
@@ -58,6 +99,16 @@ public enum MutationReportWriter {
             for failure in gate.failures { output += "- \(failure)\n" }
         }
         return output
+    }
+
+    private static func formatDuration(_ seconds: Double) -> String {
+        let totalSeconds = max(0, Int(seconds.rounded()))
+        let hours = totalSeconds / 3_600
+        let minutes = (totalSeconds % 3_600) / 60
+        let remainingSeconds = totalSeconds % 60
+        if hours > 0 { return "\(hours)h \(minutes)m \(remainingSeconds)s" }
+        if minutes > 0 { return "\(minutes)m \(remainingSeconds)s" }
+        return "\(remainingSeconds)s"
     }
 }
 

@@ -58,6 +58,27 @@ private final class MutationRunResults: @unchecked Sendable {
     }
 }
 
+private final class MutationRunMetrics: @unchecked Sendable {
+    private let lock = NSLock()
+    private var baselineTestCount: Int?
+    private var mutantTestRunCount = 0
+
+    func recordBaseline(testCount: Int) {
+        lock.lock(); defer { lock.unlock() }
+        baselineTestCount = testCount
+    }
+
+    func recordMutantTestRun() {
+        lock.lock(); defer { lock.unlock() }
+        mutantTestRunCount += 1
+    }
+
+    func snapshot() -> (baselineTestCount: Int?, mutantTestRunCount: Int) {
+        lock.lock(); defer { lock.unlock() }
+        return (baselineTestCount, mutantTestRunCount)
+    }
+}
+
 /// Writes a small, live progress line to the CLI's stdout while mutant tests run.
 /// Child-process output remains isolated in per-mutant log files.
 private final class MutationProgress: @unchecked Sendable {
@@ -160,6 +181,8 @@ public struct MutationEngine: Sendable {
     public init(xcodebuildArguments: [String] = []) { self.xcodebuildArguments = xcodebuildArguments }
 
     public func run(configuration: RunConfiguration, outputDirectory: URL? = nil) throws -> MutationReport {
+        let runStartedAt = Date()
+        let runMetrics = MutationRunMetrics()
         let projectURL = URL(fileURLWithPath: configuration.project.path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
         let root = configuration.project.kind == .swiftPackage ? projectURL : projectURL.deletingLastPathComponent()
         var adapterProject = configuration.project
@@ -209,6 +232,7 @@ public struct MutationEngine: Sendable {
             guard let baselineTestCount = executedTestCount(in: baseline.output), baselineTestCount > 0 else {
                 throw MutationEngineError.baselineRanNoTests(log: baselineLog)
             }
+            runMetrics.recordBaseline(testCount: baselineTestCount)
             baselineValidated = true
             mutationPhaseStarted = Date()
         }
@@ -369,6 +393,7 @@ public struct MutationEngine: Sendable {
                                     activationID: candidate.id,
                                     activationFile: activation
                                 )
+                                runMetrics.recordMutantTestRun()
                                 let result = try runner.run(command)
                                 let activated = self.activationContains(candidate.id, file: activation, output: result.output)
                                 var record = candidate.record
@@ -418,6 +443,7 @@ public struct MutationEngine: Sendable {
                         let log = logs.appendingPathComponent("retry-isolated-\(candidate.id).log")
                         let retryTimeout = TimeInterval(configuration.timeouts.mutantSeconds) * configuration.timeouts.retryMultiplier
                         let command = try adapter.command(root: sandbox, phase: .testWithoutBuilding, resolved: selection, environment: env, timeout: retryTimeout, output: log, scratchPath: retryScratch, stopOnActivatedTestFailure: true, activationID: candidate.id, activationFile: activation)
+                        runMetrics.recordMutantTestRun()
                         let result = try runner.run(command)
                         let activated = activationContains(candidate.id, file: activation, output: result.output)
                         var record = records[candidate.id] ?? candidate.record
@@ -484,6 +510,7 @@ public struct MutationEngine: Sendable {
                         var env = ["SWIFT_MUTATION_ID": candidate.id]
                         if let activation { env["SWIFT_MUTATION_ACTIVATION_FILE"] = activation.path }
                         let log = logs.appendingPathComponent("mutant-\(candidate.id).log")
+                        runMetrics.recordMutantTestRun()
                         let result = try runner.run(adapter.command(root: sandbox, phase: .testWithoutBuilding, resolved: selection, environment: env, timeout: TimeInterval(configuration.timeouts.mutantSeconds), output: log, stopOnActivatedTestFailure: true, activationID: candidate.id, activationFile: activation))
                         let activated = activationContains(candidate.id, file: activation, output: result.output)
                         var record = candidate.record
@@ -578,6 +605,7 @@ public struct MutationEngine: Sendable {
                                 if let activation { try? FileManager.default.removeItem(at: activation) }
                                 var env = ["SWIFT_MUTATION_ID": candidate.id]
                                 if let activation { env["SWIFT_MUTATION_ACTIVATION_FILE"] = activation.path }
+                                runMetrics.recordMutantTestRun()
                                 let result = try runner.run(adapter.command(root: workerRoot, phase: .testWithoutBuilding, resolved: selection, environment: env, timeout: TimeInterval(configuration.timeouts.mutantSeconds), output: log, stopOnActivatedTestFailure: true, activationID: candidate.id, activationFile: activation))
                                 let wasActivated = self.activationContains(candidate.id, file: activation, output: result.output)
                                 record.durationSeconds = (record.durationSeconds ?? 0) + result.elapsed
@@ -660,7 +688,14 @@ public struct MutationEngine: Sendable {
         let sourceContents = Dictionary(uniqueKeysWithValues: try sourceFiles.map { file in
             (relativePath(file, root: root), try String(contentsOf: file, encoding: .utf8))
         })
-        try MutationReportWriter.write(report, to: output, sourceContents: sourceContents, formats: Set(configuration.output.formats))
+        let runMetricsSnapshot = runMetrics.snapshot()
+        let runDetails = MutationRunSummaryDetails(
+            testTarget: configuration.project.testTarget,
+            baselineTestCount: runMetricsSnapshot.baselineTestCount,
+            mutantTestRunCount: runMetricsSnapshot.mutantTestRunCount,
+            totalDurationSeconds: Date().timeIntervalSince(runStartedAt)
+        )
+        try MutationReportWriter.write(report, to: output, sourceContents: sourceContents, formats: Set(configuration.output.formats), runDetails: runDetails)
         return report
     }
 
