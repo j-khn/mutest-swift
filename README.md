@@ -8,19 +8,22 @@
 - Xcode with a Swift 6.4-compatible toolchain. The package pins SwiftSyntax 604.0.0; development and CI use Xcode's `swift` and `xcodebuild` tools.
 - Git and network access for the first SwiftPM dependency resolution.
 
-## 1. Clone and build the tool
+## Use the CLI locally
+
+The CLI is currently distributed as source; there is no prebuilt binary or package-manager installation yet. For local CLI use, clone this repository once and keep the checkout wherever you like. Point `--project` at the project you want to test.
+
+### 1. Clone the tool
 
 ```sh
 git clone https://github.com/jamilkhan55/mutest-swift.git
 cd mutest-swift
 swift --version
-swift test
 swift run swift-mutation-testing version
 ```
 
-`swift test` builds the engine and runs its unit and integration tests. The CLI is run with `swift run swift-mutation-testing` from this checkout.
+The first `swift run` resolves dependencies and builds the CLI; later invocations reuse the build. Running `swift test` is optional and checks the tool's own unit and integration tests; it is not a prerequisite for mutating your project.
 
-## 2. Try a mutation run with the included sample
+### 2. Try a mutation run with the included sample
 
 First check that the sample Swift package can be discovered:
 
@@ -58,7 +61,7 @@ swift run swift-mutation-testing run \
 
 Change `iPhone 17` to a simulator installed on your Mac. For a workspace, use `--project-kind xcode-workspace` and pass the `.xcworkspace` path.
 
-## 3. Run it on your own project from the CLI
+### 3. Run it on your own project from the same checkout
 
 From this repository, point `--project` at your Swift package or Xcode project. For example:
 
@@ -92,7 +95,9 @@ swift run swift-mutation-testing run \
 
 All seven operators are currently experimental. `conservative` and `default` tiers stay unavailable until real-package campaign evidence supports promotion.
 
-## 4. Run it in GitHub Actions
+## Use it in GitHub Actions
+
+You do **not** need to clone `mutest-swift` or run `swift test` in your workflow. Reference the remote composite action below; GitHub fetches the action source for the run, and the action builds and runs the CLI. Your workflow only needs to check out the project being mutated.
 
 The composite action in this repository wraps the same CLI, adds the Markdown report to the job summary, and uploads the reports as the `swift-mutation-testing-report` artifact.
 
