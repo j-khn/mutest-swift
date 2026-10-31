@@ -103,6 +103,26 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Prepare mutest-swift build cache key
+      id: build-cache
+      shell: bash
+      run: |
+        set -euo pipefail
+        engine_path="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)"
+        toolchain_fingerprint="$( { xcode-select -p; swift --version; } | shasum -a 256 | awk '{print $1}')"
+        package_fingerprint="$(cd "$engine_path" && shasum -a 256 Package.swift Package.resolved | shasum -a 256 | awk '{print $1}')"
+        sources_fingerprint="$(cd "$engine_path" && find Sources -type f -name '*.swift' -print | LC_ALL=C sort | while IFS= read -r file; do printf '%s ' "$file"; shasum -a 256 "$engine_path/$file" | awk '{print $1}'; done | shasum -a 256 | awk '{print $1}')"
+        echo "engine_path=$engine_path" >> "$GITHUB_OUTPUT"
+        echo "toolchain=$toolchain_fingerprint" >> "$GITHUB_OUTPUT"
+        echo "package=$package_fingerprint" >> "$GITHUB_OUTPUT"
+        echo "sources=$sources_fingerprint" >> "$GITHUB_OUTPUT"
+    - name: Restore mutest-swift compiler cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.build-cache.outputs.engine_path }}/.build
+        key: mutest-swift-build-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.build-cache.outputs.toolchain }}-${{ steps.build-cache.outputs.package }}-${{ steps.build-cache.outputs.sources }}
+        restore-keys: |
+          mutest-swift-build-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.build-cache.outputs.toolchain }}-${{ steps.build-cache.outputs.package }}-
     - name: Build command arguments
       id: arguments
       shell: bash

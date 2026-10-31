@@ -49,43 +49,70 @@ public struct SwiftMutationGenerator: Sendable {
         }.sorted { $0.span.start < $1.span.start }
     }
 
-    /// Produces one runtime-switch schema from non-overlapping candidates. Candidates that overlap
-    /// are returned separately and must be evaluated using an isolated single-mutant build.
+    /// Produces one runtime-switch schema from candidate expressions. Candidates that overlap
+    /// are grouped into one runtime switch so each alternative can reuse the same build.
     public func makeSchema(source: String, candidates: [MutationCandidate]) -> (source: String, included: Set<String>, isolated: [MutationCandidate]) {
-        let sorted = candidates.sorted { lhs, rhs in
+        var seen = Set<String>()
+        let sorted = candidates.filter { seen.insert($0.id).inserted }.sorted { lhs, rhs in
             if lhs.span.start == rhs.span.start { return lhs.span.end < rhs.span.end }
             return lhs.span.start < rhs.span.start
         }
-        var selected: [MutationCandidate] = []
         var isolated: [MutationCandidate] = []
-        var end = -1
+        var groups: [[MutationCandidate]] = []
+        var groupEnd = -1
         for candidate in sorted {
             if candidate.requiresIsolation {
                 isolated.append(candidate)
-            } else if candidate.span.start >= end {
-                selected.append(candidate)
-                end = candidate.span.end
+            } else if !groups.isEmpty, candidate.span.start < groupEnd {
+                groups[groups.count - 1].append(candidate)
+                groupEnd = max(groupEnd, candidate.span.end)
             } else {
-                isolated.append(candidate)
+                groups.append([candidate])
+                groupEnd = candidate.span.end
             }
         }
 
         var output = Array(source.utf8)
-        for candidate in selected.reversed() {
-            let original = String(decoding: output[candidate.span.start..<candidate.span.end], as: UTF8.self)
-            let replacement: String
-            if candidate.usesStatementForm {
-                replacement = "if __SwiftMutationRuntime.shouldRunOriginal(\"\(candidate.id)\") { \(original) }"
-            } else {
-                replacement = "__SwiftMutationRuntime.evaluate(\"\(candidate.id)\", mutated: (\(candidate.replacement)), original: (\(original)))"
+        var included = Set<String>()
+        var replacements: [(SourceSpan, String)] = []
+        for group in groups {
+            guard let start = group.map(\.span.start).min(), let end = group.map(\.span.end).max() else { continue }
+            guard group.allSatisfy({ !$0.usesStatementForm }) || group.count == 1 else {
+                isolated += group
+                continue
             }
-            output.replaceSubrange(candidate.span.start..<candidate.span.end, with: replacement.utf8)
+            let span = SourceSpan(start: start, end: end)
+            let original = String(decoding: output[start..<end], as: UTF8.self)
+            let replacement: String
+            if group.count == 1, let candidate = group.first, candidate.usesStatementForm {
+                replacement = "if __SwiftMutationRuntime.shouldRunOriginal(\"\(candidate.id)\") { \(original) }"
+                included.insert(candidate.id)
+            } else if group.count == 1, let candidate = group.first {
+                replacement = "__SwiftMutationRuntime.evaluate(\"\(candidate.id)\", mutated: (\(candidate.replacement)), original: (\(original)))"
+                included.insert(candidate.id)
+            } else {
+                let alternatives = group.map { candidate -> String in
+                    var variant = Array(original.utf8)
+                    let lowerBound = candidate.span.start - start
+                    let upperBound = candidate.span.end - start
+                    guard lowerBound >= 0, upperBound <= variant.count, lowerBound < upperBound else { return "" }
+                    variant.replaceSubrange(lowerBound..<upperBound, with: candidate.replacement.utf8)
+                    included.insert(candidate.id)
+                    let mutated = String(decoding: variant, as: UTF8.self)
+                    return "(\"\(candidate.id)\", { (\(mutated)) })"
+                }.filter { !$0.isEmpty }.joined(separator: ", ")
+                replacement = "__SwiftMutationRuntime.select(original: { (\(original)) }, mutations: [\(alternatives)])"
+            }
+            replacements.append((span, replacement))
         }
-        guard !selected.isEmpty else { return (source, [], isolated) }
+        for (span, replacement) in replacements.reversed() {
+            output.replaceSubrange(span.start..<span.end, with: replacement.utf8)
+        }
+        guard !included.isEmpty else { return (source, [], isolated) }
         var schema = String(decoding: output, as: UTF8.self)
         if !schema.contains("import Foundation") { schema = "import Foundation\n" + schema }
         schema += "\n\n\(Self.runtimeSupport)\n"
-        return (schema, Set(selected.map(\.id)), isolated)
+        return (schema, included, isolated)
     }
 
     public func singleMutant(source: String, candidate: MutationCandidate) -> String {
@@ -115,6 +142,13 @@ public struct SwiftMutationGenerator: Sendable {
             guard ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"] == id else { return true }
             mark(id)
             return false
+        }
+
+        static func select<T>(original: () -> T, mutations: [(String, () -> T)]) -> T {
+            guard let activeID = ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"],
+                  let mutation = mutations.first(where: { $0.0 == activeID }) else { return original() }
+            mark(activeID)
+            return mutation.1()
         }
 
         private static func mark(_ id: String) {

@@ -80,6 +80,22 @@ struct SourceMutatorTests {
         #expect(schema.source.contains("SWIFT_MUTATION_ACTIVATION_FILE"))
     }
 
+    @Test("groups overlapping operator mutations into one runtime schema")
+    func overlappingOperatorsShareSchema() {
+        let input = "func fee(_ amount: Int, _ rate: Int) -> Int { (amount * rate + 5_000) / 10_000 }"
+        let candidates = SwiftMutationGenerator().generate(
+            source: input,
+            relativePath: "Sources/Rule.swift",
+            operators: [.arithmetic]
+        )
+        let schema = SwiftMutationGenerator().makeSchema(source: input, candidates: candidates)
+
+        #expect(candidates.count > 1)
+        #expect(schema.included == Set(candidates.map(\.id)))
+        #expect(schema.isolated.isEmpty)
+        #expect(schema.source.contains("__SwiftMutationRuntime.select"))
+    }
+
     @Test("SHA-256 output is stable and standard")
     func digest() {
         #expect(SHA256Digest.hash("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
