@@ -162,7 +162,10 @@ private final class TestDiscoveryVisitor: SyntaxVisitor {
 public struct NativeTestAdapter: Sendable {
     public var project: ProjectConfiguration
     public var selection: TestSelection
-    public init(project: ProjectConfiguration, selection: TestSelection) { self.project = project; self.selection = selection }
+    public var xcodebuildArguments: [String]
+    public init(project: ProjectConfiguration, selection: TestSelection, xcodebuildArguments: [String] = []) {
+        self.project = project; self.selection = selection; self.xcodebuildArguments = xcodebuildArguments
+    }
 
     public func command(root: URL, phase: TestPhase, resolved: ResolvedTestSelection, environment: [String: String], timeout: TimeInterval, output: URL, scratchPath: URL? = nil, stopOnActivatedTestFailure: Bool = false, activationID: String? = nil, activationFile: URL? = nil) throws -> CommandSpec {
         switch project.kind {
@@ -197,6 +200,7 @@ public struct NativeTestAdapter: Sendable {
             if let destination = project.destination { args += ["-destination", destination] }
             args.append("-derivedDataPath")
             args.append(root.appendingPathComponent(".swift-mutation-testing/DerivedData").path)
+            args += xcodebuildArguments
             if resolved.allTests, let testTarget = project.testTarget, !testTarget.isEmpty {
                 args.append("-only-testing:\(testTarget)")
             } else {

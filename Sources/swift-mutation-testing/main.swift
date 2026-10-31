@@ -31,14 +31,16 @@ enum SwiftMutationTestingCLI {
             if arguments.command == "version" { print("mutest-swift 0.2.0 · spec 1.0.0"); return }
             if arguments.command == "validate" {
                 let configuration = try makeConfiguration(arguments)
+                _ = try xcodebuildArguments(arguments, projectKind: configuration.project.kind)
                 try validate(configuration)
                 print("Configuration valid. Project: \(configuration.project.kind.rawValue) at \(configuration.project.path)")
                 return
             }
             guard arguments.command == "run" else { throw CLIError.usage("Expected command 'run', 'validate', 'version', or 'help'.\n\n\(help)") }
             let configuration = try makeConfiguration(arguments)
+            let buildSettings = try xcodebuildArguments(arguments, projectKind: configuration.project.kind)
             let output = arguments.first("--output").map { URL(fileURLWithPath: $0, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL }
-            let report = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+            let report = try MutationEngine(xcodebuildArguments: buildSettings).run(configuration: configuration, outputDirectory: output)
             let score = report.summary.score.map { String(format: "%.1f%%", $0 * 100) } ?? "n/a"
             print("Mutation score: \(score) · killed \(report.summary.killed) · survived \(report.summary.survived) · no coverage \(report.summary.noCoverage) · timeout \(report.summary.timedOut) · unbuildable \(report.summary.unbuildable)")
             let projectURL = URL(fileURLWithPath: configuration.project.path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
@@ -61,7 +63,7 @@ enum SwiftMutationTestingCLI {
         var parsed = Arguments(command: command)
         let valueOptions: Set<String> = [
             "--config", "--project", "--project-kind", "--source", "--test-file", "--suite", "--test",
-            "--scheme", "--test-target", "--destination", "--operators", "--operator-tier", "--build-timeout",
+            "--scheme", "--test-target", "--destination", "--xcodebuild-arg", "--operators", "--operator-tier", "--build-timeout",
             "--baseline-timeout", "--mutant-timeout", "--parallelism", "--output", "--cache-path", "--minimum-score",
             "--maximum-score-drop", "--maximum-integrity-warnings", "--baseline-report"
         ]
@@ -162,6 +164,20 @@ enum SwiftMutationTestingCLI {
         )
     }
 
+    static func xcodebuildArguments(_ arguments: Arguments, projectKind: ProjectKind) throws -> [String] {
+        let values = arguments.all("--xcodebuild-arg")
+        guard values.isEmpty || projectKind != .swiftPackage else {
+            throw CLIError.usage("--xcodebuild-arg can only be used with Xcode projects or workspaces.")
+        }
+        guard values.allSatisfy({ value in
+            guard let separator = value.firstIndex(of: "=") else { return false }
+            return separator != value.startIndex
+        }) else {
+            throw CLIError.usage("Each --xcodebuild-arg must be a build setting in NAME=VALUE form.")
+        }
+        return values
+    }
+
     static func integer(_ text: String, name: String) throws -> Int {
         guard let value = Int(text), value > 0 else { throw CLIError.usage("\(name) must be a positive integer.") }
         return value
@@ -195,6 +211,7 @@ enum SwiftMutationTestingCLI {
       --scheme NAME                  Xcode scheme
       --test-target NAME             Xcode test target
       --destination VALUE            xcodebuild destination, e.g. platform=iOS Simulator,name=iPhone 17
+      --xcodebuild-arg NAME=VALUE    Xcode build setting; repeatable
       --operators IDS                Comma-separated canonical operator IDs
       --operator-tier TIER           conservative | default | experimental | all
       --config PATH                  JSON run configuration

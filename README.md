@@ -100,6 +100,9 @@ Use the same CLI or Action, and set the Xcode project details. For the Action, r
     scheme: MyApp
     test-target: MyAppTests
     destination: platform=iOS Simulator,name=iPhone 17
+    xcodebuild-arg: |
+      ARCHS=arm64
+      ONLY_ACTIVE_ARCH=YES
     operator-tier: experimental
 ```
 

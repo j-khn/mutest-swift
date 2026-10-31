@@ -36,6 +36,10 @@ inputs:
     description: xcodebuild destination
     required: false
     default: ""
+  xcodebuild-arg:
+    description: Xcode build setting in NAME=VALUE form, one per line
+    required: false
+    default: ""
   operator-tier:
     description: conservative, default, experimental, or all
     required: false
@@ -116,6 +120,7 @@ runs:
         INPUT_SCHEME: ${{ inputs.scheme }}
         INPUT_TEST_TARGET: ${{ inputs.test-target }}
         INPUT_DESTINATION: ${{ inputs.destination }}
+        INPUT_XCODEBUILD_ARG: ${{ inputs.xcodebuild-arg }}
         INPUT_OPERATOR_TIER: ${{ inputs.operator-tier }}
         INPUT_PARALLELISM: ${{ inputs.parallelism }}
         INPUT_CACHE_PATH: ${{ inputs.cache-path }}
@@ -150,6 +155,7 @@ runs:
         [[ "$INPUT_NO_SUPPRESSIONS" == "true" ]] && args+=(--no-suppressions)
         [[ "$INPUT_REQUIRE_SUPPRESSION_REASON" == "true" ]] && args+=(--require-suppression-reason)
         [[ -n "$INPUT_DESTINATION" ]] && args+=(--destination "$INPUT_DESTINATION")
+        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--xcodebuild-arg "$value"); done <<< "$INPUT_XCODEBUILD_ARG"
         [[ -n "$INPUT_MINIMUM_SCORE" ]] && args+=(--minimum-score "$INPUT_MINIMUM_SCORE")
         [[ -n "$INPUT_BASELINE_REPORT" ]] && args+=(--baseline-report "$INPUT_BASELINE_REPORT")
         [[ -n "$INPUT_MAXIMUM_SCORE_DROP" ]] && args+=(--maximum-score-drop "$INPUT_MAXIMUM_SCORE_DROP")

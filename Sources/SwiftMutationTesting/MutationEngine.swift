@@ -98,7 +98,8 @@ private final class LockedJournal: @unchecked Sendable {
 }
 
 public struct MutationEngine: Sendable {
-    public init() {}
+    private let xcodebuildArguments: [String]
+    public init(xcodebuildArguments: [String] = []) { self.xcodebuildArguments = xcodebuildArguments }
 
     public func run(configuration: RunConfiguration, outputDirectory: URL? = nil) throws -> MutationReport {
         let projectURL = URL(fileURLWithPath: configuration.project.path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
@@ -137,7 +138,7 @@ public struct MutationEngine: Sendable {
             forXcode: configuration.project.kind != .swiftPackage
         )
         timings.testDiscoverySeconds = Date().timeIntervalSince(testDiscoveryStarted)
-        let adapter = NativeTestAdapter(project: adapterProject, selection: configuration.tests)
+        let adapter = NativeTestAdapter(project: adapterProject, selection: configuration.tests, xcodebuildArguments: xcodebuildArguments)
         let runner = ProcessRunner()
         let baselineLog = logs.appendingPathComponent("baseline.log")
         var baselineValidated = false
@@ -175,7 +176,7 @@ public struct MutationEngine: Sendable {
         digestConfiguration.output = .init()
         let journalDirectory = cacheDirectory ?? output
         let inputHashStarted = Date()
-        let inputDigest = try digestInputs(root: root, files: sourceFiles, configuration: digestConfiguration, excluding: [output, journalDirectory])
+        let inputDigest = try digestInputs(root: root, files: sourceFiles, configuration: digestConfiguration, xcodebuildArguments: xcodebuildArguments, excluding: [output, journalDirectory])
         timings.inputHashSeconds = Date().timeIntervalSince(inputHashStarted)
         let journal = journalDirectory.appendingPathComponent("journal.jsonl")
         let cached = configuration.cache.enabled ? loadJournal(at: journal) : []
@@ -700,7 +701,7 @@ public struct MutationEngine: Sendable {
         return String(filePath.dropFirst(prefix.count))
     }
 
-    private func digestInputs(root: URL, files: [URL], configuration: RunConfiguration, excluding excludedPaths: [URL]) throws -> String {
+    private func digestInputs(root: URL, files: [URL], configuration: RunConfiguration, xcodebuildArguments: [String], excluding excludedPaths: [URL]) throws -> String {
         var inputs: [String: URL] = [:]
         let rootPath = root.standardizedFileURL.path.hasSuffix("/") ? root.standardizedFileURL.path : root.standardizedFileURL.path + "/"
         let excludedRelativePaths = excludedPaths.compactMap { path -> String? in
@@ -737,6 +738,10 @@ public struct MutationEngine: Sendable {
             content.append(contentsOf: fileDigest.utf8)
         }
         content.append(configData)
+        for argument in xcodebuildArguments {
+            content.append(0)
+            content.append(contentsOf: argument.utf8)
+        }
         let environment = ProcessInfo.processInfo.environment
         let toolchainKeys = ["MUTEST_TOOLCHAIN_FINGERPRINT", "DEVELOPER_DIR", "TOOLCHAINS", "SDKROOT", "SWIFT_VERSION", "ARCHS", "CONFIGURATION"]
         for key in toolchainKeys {
