@@ -147,7 +147,11 @@ runs:
         [[ -n "$INPUT_TEST_TARGET" ]] && args+=(--test-target "$INPUT_TEST_TARGET")
         if [[ -n "$INPUT_CACHE_PATH" ]]; then
           cache_path="$INPUT_CACHE_PATH"
-          if [[ "$cache_path" != /* ]]; then cache_path="$project_path/$cache_path"; fi
+          project_root="$project_path"
+          if [[ "$INPUT_PROJECT_KIND" == "xcode-project" || "$INPUT_PROJECT_KIND" == "xcode-workspace" ]]; then
+            project_root="$(dirname "$project_path")"
+          fi
+          if [[ "$cache_path" != /* ]]; then cache_path="$project_root/$cache_path"; fi
           args+=(--cache-path "$cache_path")
         fi
         [[ "$INPUT_NO_CACHE" == "true" ]] && args+=(--no-cache)
