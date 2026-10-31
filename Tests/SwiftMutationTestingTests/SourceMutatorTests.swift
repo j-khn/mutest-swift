@@ -38,6 +38,31 @@ struct SourceMutatorTests {
         #expect(candidates.contains { $0.operatorID == .removeSideEffects })
     }
 
+    @Test("keeps safe statement mutations in a shared schema")
+    func safeStatementSchema() {
+        let input = "func write() { print(\"first\"); print(\"second\") }"
+        let candidates = SwiftMutationGenerator().generate(source: input, relativePath: "Sources/Rule.swift", operators: [.removeSideEffects])
+        let schema = SwiftMutationGenerator().makeSchema(source: input, candidates: candidates)
+        #expect(candidates.count == 2)
+        #expect(candidates.allSatisfy { !$0.requiresIsolation })
+        #expect(schema.included.count == 2)
+        #expect(schema.isolated.isEmpty)
+    }
+
+    @Test("isolates a statement mutation that occupies an implicit-return body")
+    func implicitReturnStatementIsolation() throws {
+        let input = "func clamp(_ value: Int) -> Int { max(0, value) }"
+        let candidates = SwiftMutationGenerator().generate(source: input, relativePath: "Sources/Rule.swift", operators: [.removeSideEffects])
+        let schema = SwiftMutationGenerator().makeSchema(source: input, candidates: candidates)
+        #expect(candidates.count == 1)
+        #expect(candidates.first?.requiresIsolation == true)
+        #expect(schema.included.isEmpty)
+        #expect(schema.isolated.count == 1)
+        let isolatedSchema = SwiftMutationGenerator().makeIsolatedSchema(source: input, candidate: try #require(candidates.first))
+        #expect(isolatedSchema.contains("shouldRunOriginal"))
+        #expect(isolatedSchema.contains("SWIFT_MUTATION_ACTIVATION_FILE"))
+    }
+
     @Test("swaps ternary branches while preserving the complete condition")
     func ternaryCondition() {
         let input = "func price(_ cents: Int) -> Int { cents > 10_000 ? 0 : 799 }"

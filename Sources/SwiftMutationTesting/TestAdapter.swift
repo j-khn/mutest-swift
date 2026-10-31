@@ -164,7 +164,7 @@ public struct NativeTestAdapter: Sendable {
     public var selection: TestSelection
     public init(project: ProjectConfiguration, selection: TestSelection) { self.project = project; self.selection = selection }
 
-    public func command(root: URL, phase: TestPhase, resolved: ResolvedTestSelection, environment: [String: String], timeout: TimeInterval, output: URL, scratchPath: URL? = nil) throws -> CommandSpec {
+    public func command(root: URL, phase: TestPhase, resolved: ResolvedTestSelection, environment: [String: String], timeout: TimeInterval, output: URL, scratchPath: URL? = nil, stopOnActivatedTestFailure: Bool = false, activationID: String? = nil, activationFile: URL? = nil) throws -> CommandSpec {
         switch project.kind {
         case .swiftPackage:
             let args: [String]
@@ -181,7 +181,7 @@ public struct NativeTestAdapter: Sendable {
                 let pattern = resolved.identifiers.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
                 finalArgs += ["--filter", pattern]
             }
-            return .init(executable: "/usr/bin/swift", arguments: finalArgs, workingDirectory: root, environment: environment, timeout: timeout, outputFile: output)
+            return .init(executable: "/usr/bin/swift", arguments: finalArgs, workingDirectory: root, environment: environment, timeout: timeout, outputFile: output, stopOnActivatedTestFailure: stopOnActivatedTestFailure, activationID: activationID, activationFile: activationFile)
         case .xcodeProject, .xcodeWorkspace:
             guard let scheme = project.scheme, !scheme.isEmpty else { throw ContractError.invalidConfiguration("Xcode projects and workspaces require --scheme.") }
             let projectPath = root.appendingPathComponent(project.path).path
@@ -217,7 +217,7 @@ public struct NativeTestAdapter: Sendable {
                 runnerEnvironment.removeValue(forKey: key)
                 runnerEnvironment["TEST_RUNNER_\(key)"] = value
             }
-            return .init(executable: "/usr/bin/xcrun", arguments: args, workingDirectory: root, environment: runnerEnvironment, timeout: timeout, outputFile: output)
+            return .init(executable: "/usr/bin/xcrun", arguments: args, workingDirectory: root, environment: runnerEnvironment, timeout: timeout, outputFile: output, stopOnActivatedTestFailure: stopOnActivatedTestFailure, activationID: activationID, activationFile: activationFile)
         }
     }
 }

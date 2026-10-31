@@ -241,6 +241,31 @@ public struct QualityGateResult: Codable, Sendable {
     public var failures: [String]
 }
 
+/// Wall-clock phase durations emitted by native engines for performance analysis.
+public struct MutationTimings: Codable, Sendable {
+    public var sandboxCopySeconds: Double
+    public var testDiscoverySeconds: Double
+    public var sourceDiscoverySeconds: Double
+    public var inputHashSeconds: Double
+    public var baselineSeconds: Double
+    public var schemaBuildSeconds: Double
+    public var mutantRunSeconds: Double
+    public var isolatedBuildSeconds: Double
+    public var cleanupSeconds: Double
+
+    public init(sandboxCopySeconds: Double = 0, testDiscoverySeconds: Double = 0, sourceDiscoverySeconds: Double = 0, inputHashSeconds: Double = 0, baselineSeconds: Double = 0, schemaBuildSeconds: Double = 0, mutantRunSeconds: Double = 0, isolatedBuildSeconds: Double = 0, cleanupSeconds: Double = 0) {
+        self.sandboxCopySeconds = sandboxCopySeconds
+        self.testDiscoverySeconds = testDiscoverySeconds
+        self.sourceDiscoverySeconds = sourceDiscoverySeconds
+        self.inputHashSeconds = inputHashSeconds
+        self.baselineSeconds = baselineSeconds
+        self.schemaBuildSeconds = schemaBuildSeconds
+        self.mutantRunSeconds = mutantRunSeconds
+        self.isolatedBuildSeconds = isolatedBuildSeconds
+        self.cleanupSeconds = cleanupSeconds
+    }
+}
+
 public struct MutationReport: Codable, Sendable {
     public var schemaVersion: String = "1.0.0"
     public var specVersion: String = "1.0.0"
@@ -251,6 +276,7 @@ public struct MutationReport: Codable, Sendable {
     public var mutants: [MutantRecord]
     public var integrityWarnings: [IntegrityWarning]
     public var qualityGate: QualityGateResult?
+    public var timings: MutationTimings?
 
     public struct EngineIdentity: Codable, Sendable {
         public var name: String; public var version: String; public var tierPolicy: String
@@ -261,9 +287,9 @@ public struct MutationReport: Codable, Sendable {
         public init(sources: [String], tests: [String], allTests: Bool) { self.sources = sources; self.tests = tests; self.allTests = allTests }
     }
 
-    public init(runId: String = UUID().uuidString, engine: EngineIdentity = .init(name: "swift-mutation-testing", version: "0.1.0", tierPolicy: "all operators experimental pending campaign"), scope: Scope, mutants: [MutantRecord], integrityWarnings: [IntegrityWarning] = [], qualityGate: QualityGateResult? = nil) {
+    public init(runId: String = UUID().uuidString, engine: EngineIdentity = .init(name: "mutest-swift", version: "0.2.0", tierPolicy: "all operators experimental pending campaign"), scope: Scope, mutants: [MutantRecord], integrityWarnings: [IntegrityWarning] = [], qualityGate: QualityGateResult? = nil, timings: MutationTimings? = nil) {
         self.runId = runId; self.engine = engine; self.scope = scope; self.mutants = mutants
-        self.summary = MutationSummary(records: mutants); self.integrityWarnings = integrityWarnings; self.qualityGate = qualityGate
+        self.summary = MutationSummary(records: mutants); self.integrityWarnings = integrityWarnings; self.qualityGate = qualityGate; self.timings = timings
     }
 }
 

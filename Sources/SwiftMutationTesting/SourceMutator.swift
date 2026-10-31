@@ -19,6 +19,9 @@ public struct MutationCandidate: Codable, Sendable, Identifiable {
     public var original: String
     public var replacement: String
     public var usesStatementForm: Bool
+    /// Statement wrappers are unsafe in a single-item code block because Swift may infer
+    /// the block's value as an implicit return. Those candidates stay on the isolated path.
+    public var requiresIsolation: Bool
     public var suppressionReason: String?
 
     public var record: MutantRecord {
@@ -57,7 +60,9 @@ public struct SwiftMutationGenerator: Sendable {
         var isolated: [MutationCandidate] = []
         var end = -1
         for candidate in sorted {
-            if candidate.span.start >= end {
+            if candidate.requiresIsolation {
+                isolated.append(candidate)
+            } else if candidate.span.start >= end {
                 selected.append(candidate)
                 end = candidate.span.end
             } else {
@@ -90,6 +95,14 @@ public struct SwiftMutationGenerator: Sendable {
         return String(decoding: bytes, as: UTF8.self)
     }
 
+    /// Builds one candidate with its activation instrumentation even when the normal
+    /// shared-schema path marked it unsafe to combine with other candidates.
+    public func makeIsolatedSchema(source: String, candidate: MutationCandidate) -> String {
+        var isolatedCandidate = candidate
+        isolatedCandidate.requiresIsolation = false
+        return makeSchema(source: source, candidates: [isolatedCandidate]).source
+    }
+
     private static let runtimeSupport = #"""
     private enum __SwiftMutationRuntime {
         static func evaluate<T>(_ id: String, mutated: @autoclosure () -> T, original: @autoclosure () -> T) -> T {
@@ -112,9 +125,10 @@ public struct SwiftMutationGenerator: Sendable {
                     defer { try? handle.close() }
                     try? handle.seekToEnd()
                     try? handle.write(contentsOf: line)
-                    return
                 }
             }
+            // Keep an ordered marker in the process log as well as the durable file marker.
+            // The runner uses the ordering to ensure the failing test came after activation.
             try? FileHandle.standardError.write(contentsOf: Data(("SWIFT_MUTATION_ACTIVATED:" + id + "\n").utf8))
         }
     }
@@ -203,7 +217,7 @@ private final class CandidateVisitor: SyntaxVisitor {
         guard enabled.contains(.removeSideEffects), case .expr(let expression) = node.item,
               expression.is(FunctionCallExprSyntax.self) else { return .visitChildren }
         let expressionText = text(of: expression)
-        add(node, operator: .removeSideEffects, replacement: "()", original: text(of: node), usesStatementForm: true)
+        add(node, operator: .removeSideEffects, replacement: "()", original: text(of: node), usesStatementForm: true, requiresIsolation: node.parent?.as(CodeBlockItemListSyntax.self)?.count == 1)
         _ = expressionText
         return .visitChildren
     }
@@ -225,7 +239,7 @@ private final class CandidateVisitor: SyntaxVisitor {
         return String(decoding: bytes, as: UTF8.self)
     }
 
-    private func add(_ node: some SyntaxProtocol, operator operatorID: MutationOperator, replacement: String, original: String? = nil, usesStatementForm: Bool = false) {
+    private func add(_ node: some SyntaxProtocol, operator operatorID: MutationOperator, replacement: String, original: String? = nil, usesStatementForm: Bool = false, requiresIsolation: Bool = false) {
         let start = node.positionAfterSkippingLeadingTrivia.utf8Offset
         let end = node.endPositionBeforeTrailingTrivia.utf8Offset
         guard start >= 0, end <= sourceBytes.count, start < end else { return }
@@ -235,7 +249,7 @@ private final class CandidateVisitor: SyntaxVisitor {
         let column = start - lineStart + 1
         let stableParts = ["1.0.0", relativePath.replacingOccurrences(of: "\\", with: "/"), operatorID.rawValue, String(start), originalText, replacement].joined(separator: "\u{0}")
         let id = SHA256Digest.hash(stableParts)
-        candidates.append(.init(id: id, operatorID: operatorID, source: relativePath, line: line, column: column, span: .init(start: start, end: end), original: originalText, replacement: replacement, usesStatementForm: usesStatementForm, suppressionReason: nil))
+        candidates.append(.init(id: id, operatorID: operatorID, source: relativePath, line: line, column: column, span: .init(start: start, end: end), original: originalText, replacement: replacement, usesStatementForm: usesStatementForm, requiresIsolation: requiresIsolation, suppressionReason: nil))
     }
 
     private func text(of node: some SyntaxProtocol) -> String {

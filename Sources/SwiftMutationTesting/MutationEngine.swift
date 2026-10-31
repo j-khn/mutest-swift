@@ -42,17 +42,19 @@ private final class MutationRunResults: @unchecked Sendable {
     private var records: [String: MutantRecord] = [:]
     private var warnings: [IntegrityWarning] = []
     private var retries: [MutationCandidate] = []
+    private var isolatedBuildSeconds: TimeInterval = 0
 
-    func store(_ record: MutantRecord, warning: IntegrityWarning? = nil, retry: MutationCandidate? = nil) {
+    func store(_ record: MutantRecord, warning: IntegrityWarning? = nil, retry: MutationCandidate? = nil, isolatedBuildSeconds: TimeInterval = 0) {
         lock.lock(); defer { lock.unlock() }
         records[record.id] = record
         if let warning { warnings.append(warning) }
         if let retry { retries.append(retry) }
+        self.isolatedBuildSeconds += isolatedBuildSeconds
     }
 
-    func snapshot() -> (records: [String: MutantRecord], warnings: [IntegrityWarning], retries: [MutationCandidate]) {
+    func snapshot() -> (records: [String: MutantRecord], warnings: [IntegrityWarning], retries: [MutationCandidate], isolatedBuildSeconds: TimeInterval) {
         lock.lock(); defer { lock.unlock() }
-        return (records, warnings, retries)
+        return (records, warnings, retries, isolatedBuildSeconds)
     }
 }
 
@@ -111,27 +113,48 @@ public struct MutationEngine: Sendable {
         let cacheDirectory = configuration.cache.path.map { URL(fileURLWithPath: $0, relativeTo: root).standardizedFileURL }
         let logs = output.appendingPathComponent("logs", isDirectory: true)
         try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        var timings = MutationTimings()
+        let sandboxCopyStarted = Date()
         let sandbox = try makeSandbox(
             from: root,
             into: output.appendingPathComponent("sandboxes", isDirectory: true),
             excluding: [output] + (cacheDirectory.map { [$0] } ?? [])
         )
-        defer { try? FileManager.default.removeItem(at: sandbox) }
+        timings.sandboxCopySeconds = Date().timeIntervalSince(sandboxCopyStarted)
+        var auxiliarySandboxes: [URL] = []
+        var sandboxRemoved = false
+        defer {
+            if !sandboxRemoved {
+                auxiliarySandboxes.forEach { try? FileManager.default.removeItem(at: $0) }
+                try? FileManager.default.removeItem(at: sandbox)
+            }
+        }
+        let testDiscoveryStarted = Date()
         let selection = try SwiftTestSelectorResolver().resolve(
             projectRoot: root,
             selection: configuration.tests,
             testTarget: configuration.project.testTarget,
             forXcode: configuration.project.kind != .swiftPackage
         )
+        timings.testDiscoverySeconds = Date().timeIntervalSince(testDiscoveryStarted)
         let adapter = NativeTestAdapter(project: adapterProject, selection: configuration.tests)
         let runner = ProcessRunner()
         let baselineLog = logs.appendingPathComponent("baseline.log")
-        let baseline = try runner.run(adapter.command(root: sandbox, phase: .baseline, resolved: selection, environment: [:], timeout: TimeInterval(configuration.timeouts.baselineSeconds), output: baselineLog))
-        guard !baseline.timedOut && baseline.exitCode == 0 else { throw MutationEngineError.baselineFailed(log: baselineLog, timedOut: baseline.timedOut) }
-        guard let baselineTestCount = executedTestCount(in: baseline.output), baselineTestCount > 0 else {
-            throw MutationEngineError.baselineRanNoTests(log: baselineLog)
+        var baselineValidated = false
+        var mutationPhaseStarted: Date?
+        func validateBaseline(phase: TestPhase) throws {
+            let baselineStarted = Date()
+            let baseline = try runner.run(adapter.command(root: sandbox, phase: phase, resolved: selection, environment: [:], timeout: TimeInterval(configuration.timeouts.baselineSeconds), output: baselineLog))
+            timings.baselineSeconds += Date().timeIntervalSince(baselineStarted)
+            guard !baseline.timedOut && baseline.exitCode == 0 else { throw MutationEngineError.baselineFailed(log: baselineLog, timedOut: baseline.timedOut) }
+            guard let baselineTestCount = executedTestCount(in: baseline.output), baselineTestCount > 0 else {
+                throw MutationEngineError.baselineRanNoTests(log: baselineLog)
+            }
+            baselineValidated = true
+            mutationPhaseStarted = Date()
         }
 
+        let sourceDiscoveryStarted = Date()
         let sourceFiles = try discoverSources(root: root, requested: configuration.source, kind: configuration.project.kind)
         guard !sourceFiles.isEmpty else { throw MutationEngineError.noSourceFiles("No Swift source files found in the selected source scope.") }
         var candidates: [MutationCandidate] = []
@@ -142,6 +165,7 @@ public struct MutationEngine: Sendable {
             candidates += generator.generate(source: contents, relativePath: relative, operators: Set(configuration.operators), suppression: configuration.suppression)
         }
         candidates.sort { ($0.source, $0.span.start) < ($1.source, $1.span.start) }
+        timings.sourceDiscoverySeconds = Date().timeIntervalSince(sourceDiscoveryStarted)
 
         var digestConfiguration = configuration
         digestConfiguration.project.path = configuration.project.kind == .swiftPackage ? "." : adapterProject.path
@@ -150,7 +174,9 @@ public struct MutationEngine: Sendable {
         digestConfiguration.qualityGate = .init()
         digestConfiguration.output = .init()
         let journalDirectory = cacheDirectory ?? output
+        let inputHashStarted = Date()
         let inputDigest = try digestInputs(root: root, files: sourceFiles, configuration: digestConfiguration, excluding: [output, journalDirectory])
+        timings.inputHashSeconds = Date().timeIntervalSince(inputHashStarted)
         let journal = journalDirectory.appendingPathComponent("journal.jsonl")
         let cached = configuration.cache.enabled ? loadJournal(at: journal) : []
         var records: [String: MutantRecord] = [:]
@@ -173,6 +199,15 @@ public struct MutationEngine: Sendable {
             }
         }
         let remaining = runnable.filter { records[$0.id] == nil }
+        var historicalDurations: [String: TimeInterval] = [:]
+        for entry in cached {
+            if let duration = entry.record.durationSeconds { historicalDurations[entry.record.id] = duration }
+        }
+        func slowestFirst(_ lhs: MutationCandidate, _ rhs: MutationCandidate) -> Bool {
+            let left = historicalDurations[lhs.id] ?? 0
+            let right = historicalDurations[rhs.id] ?? 0
+            return left == right ? lhs.id < rhs.id : left > right
+        }
 
         if !remaining.isEmpty {
             let sourceByRelative = Dictionary(uniqueKeysWithValues: sourceFiles.map { (relativePath($0, root: root), $0) })
@@ -183,17 +218,16 @@ public struct MutationEngine: Sendable {
             // activates exactly one ID for each test invocation and writes an activation marker.
             var schemaCandidates: [MutationCandidate] = []
             var isolatedCandidates: [MutationCandidate] = []
+            var schemaBuildFailed = false
             let activationDirectory: URL? = configuration.project.kind == .swiftPackage ? logs : nil
             for (relative, items) in candidatesBySource {
                 let original = try String(contentsOf: sourceByRelative[relative]!, encoding: .utf8)
-                // Statement-form rewrites cannot always live inside an expression-bodied
-                // function's implicit return. Keep them out of the shared schema so one such
-                // candidate cannot force every other mutant into an isolated build.
-                let expressionCandidates = items.filter { !$0.usesStatementForm }
-                let schema = generator.makeSchema(source: original, candidates: expressionCandidates)
-                schemaCandidates += expressionCandidates.filter { schema.included.contains($0.id) }
+                // Safe statement-form rewrites can share a schema. The generator marks
+                // single-item code blocks for isolation because Swift may infer an implicit
+                // return from their final expression.
+                let schema = generator.makeSchema(source: original, candidates: items)
+                schemaCandidates += items.filter { schema.included.contains($0.id) }
                 isolatedCandidates += schema.isolated
-                isolatedCandidates += items.filter(\.usesStatementForm)
                 let destination = sandbox.appendingPathComponent(relative)
                 try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try schema.source.write(to: destination, atomically: true, encoding: .utf8)
@@ -203,17 +237,22 @@ public struct MutationEngine: Sendable {
                 let buildLog = logs.appendingPathComponent("schema-build.log")
                 let buildPhase: TestPhase = configuration.project.kind == .swiftPackage ? .buildForTesting : .buildForTesting
                 let buildCommand = try adapter.command(root: sandbox, phase: buildPhase, resolved: selection, environment: [:], timeout: TimeInterval(configuration.timeouts.buildSeconds), output: buildLog)
+                let schemaBuildStarted = Date()
                 let build = try runner.run(buildCommand)
+                timings.schemaBuildSeconds += Date().timeIntervalSince(schemaBuildStarted)
                 if build.timedOut || build.exitCode != 0 {
-                    // A schema can fail because a particular rewrite is not type-correct. Retry
-                    // every schema member in an isolated source edit before calling it unbuildable.
-                    isolatedCandidates += schemaCandidates
+                    // Retry smaller compatible groups after validating the original baseline.
+                    // This keeps one bad rewrite from forcing every schema member into isolation.
+                    schemaBuildFailed = true
                     for original in sourceFiles {
                         let relative = relativePath(original, root: root)
                         let clean = try String(contentsOf: original, encoding: .utf8)
                         try clean.write(to: sandbox.appendingPathComponent(relative), atomically: true, encoding: .utf8)
                     }
                 } else {
+                    // The schema build has already compiled the inactive/original path. Run
+                    // the full baseline against that exact binary, then reuse it for mutants.
+                    try validateBaseline(phase: .testWithoutBuilding)
                     let concurrency = executionConcurrency(
                         root: root,
                         projectKind: configuration.project.kind,
@@ -231,7 +270,7 @@ public struct MutationEngine: Sendable {
                     let queue = OperationQueue()
                     queue.name = "swift-mutation-testing.mutants"
                     queue.maxConcurrentOperationCount = concurrency
-                    for candidate in schemaCandidates where records[candidate.id] == nil {
+                    for candidate in schemaCandidates.filter({ records[$0.id] == nil }).sorted(by: slowestFirst) {
                         queue.addOperation {
                             let workerScratch = workerScratchPool?.acquire()
                             defer {
@@ -251,7 +290,10 @@ public struct MutationEngine: Sendable {
                                     environment: env,
                                     timeout: TimeInterval(configuration.timeouts.mutantSeconds),
                                     output: log,
-                                    scratchPath: workerScratch
+                                    scratchPath: workerScratch,
+                                    stopOnActivatedTestFailure: true,
+                                    activationID: candidate.id,
+                                    activationFile: activation
                                 )
                                 let result = try runner.run(command)
                                 let activated = self.activationContains(candidate.id, file: activation, output: result.output)
@@ -261,7 +303,8 @@ public struct MutationEngine: Sendable {
                                 if result.timedOut { record.status = .timeout }
                                 else if !activated { record.status = .noCoverage }
                                 else { record.status = result.exitCode == 0 ? .survived : .killed }
-                                let warning: IntegrityWarning? = executedTestCount(in: result.output) == 0
+                                if result.stoppedEarly { record.message = "Stopped after a selected test failed while this mutant was active." }
+                                let warning: IntegrityWarning? = executedTestCount(in: result.output) == 0 && !result.stoppedEarly
                                     ? .init(code: "testsNotExecuted", message: "The selected test command reported zero executed tests.", mutantId: candidate.id)
                                     : (!activated && result.exitCode != 0 && !result.timedOut
                                         ? .init(code: "testsFailedWithoutActivation", message: "Test execution failed but the mutation was not activated; verdict is noCoverage.", mutantId: candidate.id)
@@ -293,7 +336,7 @@ public struct MutationEngine: Sendable {
                         if let activation { env["SWIFT_MUTATION_ACTIVATION_FILE"] = activation.path }
                         let log = logs.appendingPathComponent("retry-isolated-\(candidate.id).log")
                         let retryTimeout = TimeInterval(configuration.timeouts.mutantSeconds) * configuration.timeouts.retryMultiplier
-                        let command = try adapter.command(root: sandbox, phase: .testWithoutBuilding, resolved: selection, environment: env, timeout: retryTimeout, output: log, scratchPath: retryScratch)
+                        let command = try adapter.command(root: sandbox, phase: .testWithoutBuilding, resolved: selection, environment: env, timeout: retryTimeout, output: log, scratchPath: retryScratch, stopOnActivatedTestFailure: true, activationID: candidate.id, activationFile: activation)
                         let result = try runner.run(command)
                         let activated = activationContains(candidate.id, file: activation, output: result.output)
                         var record = records[candidate.id] ?? candidate.record
@@ -303,8 +346,9 @@ public struct MutationEngine: Sendable {
                         if result.timedOut { record.status = .timeout }
                         else if !activated { record.status = .noCoverage }
                         else { record.status = result.exitCode == 0 ? .survived : .killed }
+                        if result.stoppedEarly { record.message += " Stopped after an activated test failure." }
                         var retryWarnings: [IntegrityWarning] = []
-                        if executedTestCount(in: result.output) == 0 {
+                        if executedTestCount(in: result.output) == 0 && !result.stoppedEarly {
                             retryWarnings.append(.init(code: "testsNotExecuted", message: "The selected test command reported zero executed tests.", mutantId: candidate.id))
                         } else if !activated && result.exitCode != 0 && !result.timedOut {
                             retryWarnings.append(.init(code: "testsFailedWithoutActivation", message: "Isolated retry failed but the mutation was not activated; verdict is noCoverage.", mutantId: candidate.id))
@@ -318,48 +362,177 @@ public struct MutationEngine: Sendable {
                 }
             }
 
-            for candidate in isolatedCandidates where records[candidate.id] == nil {
-                let cacheKey = inputDigest + ":" + candidate.id
-                let original = try String(contentsOf: sourceByRelative[candidate.source]!, encoding: .utf8)
-                let relativeFile = sandbox.appendingPathComponent(candidate.source)
-                let mutantSource = generator.makeSchema(source: original, candidates: [candidate]).source
-                try mutantSource.write(to: relativeFile, atomically: true, encoding: .utf8)
-                let log = logs.appendingPathComponent("isolated-\(candidate.id).log")
-                let buildLog = logs.appendingPathComponent("isolated-build-\(candidate.id).log")
-                let build = try runner.run(adapter.command(root: sandbox, phase: .buildForTesting, resolved: selection, environment: [:], timeout: TimeInterval(configuration.timeouts.buildSeconds), output: buildLog))
-                var record = candidate.record
-                if build.timedOut {
-                    record.durationSeconds = build.elapsed
-                    record.status = .unbuildable
-                    record.message = "Isolated mutant build timed out after \(configuration.timeouts.buildSeconds) seconds; see \(buildLog.path)."
-                } else if build.exitCode != 0 {
-                    record.durationSeconds = build.elapsed; record.status = .unbuildable; record.message = "Isolated mutant did not compile; see \(buildLog.path)."
-                } else {
-                    let activation = activationFile(for: candidate, in: activationDirectory, useFile: activationDirectory != nil)
-                    if let activation { try? FileManager.default.removeItem(at: activation) }
-                    var env = ["SWIFT_MUTATION_ID": candidate.id]
-                    if let activation { env["SWIFT_MUTATION_ACTIVATION_FILE"] = activation.path }
-                    let result = try runner.run(adapter.command(root: sandbox, phase: .testWithoutBuilding, resolved: selection, environment: env, timeout: TimeInterval(configuration.timeouts.mutantSeconds), output: log))
-                    let wasActivated = activationContains(candidate.id, file: activation, output: result.output)
-                    record.durationSeconds = result.elapsed; record.activated = wasActivated
-                    if result.timedOut { record.status = .timeout }
-                    else if !wasActivated { record.status = .noCoverage }
-                    else { record.status = result.exitCode == 0 ? .survived : .killed }
-                    var mutantWarnings: [IntegrityWarning] = []
-                    if executedTestCount(in: result.output) == 0 {
-                        mutantWarnings.append(.init(code: "testsNotExecuted", message: "The selected test command reported zero executed tests.", mutantId: candidate.id))
-                    } else if !wasActivated && result.exitCode != 0 && !result.timedOut {
-                        mutantWarnings.append(.init(code: "testsFailedWithoutActivation", message: "Test execution failed but the mutation was not activated; verdict is noCoverage.", mutantId: candidate.id))
+            if !baselineValidated {
+                try validateBaseline(phase: .baseline)
+            }
+
+            if schemaBuildFailed {
+                func runSchemaBatch(_ batch: [MutationCandidate]) throws {
+                    guard !batch.isEmpty else { return }
+                    var batchBySource: [String: [MutationCandidate]] = [:]
+                    for candidate in batch { batchBySource[candidate.source, default: []].append(candidate) }
+                    for sourceFile in sourceFiles {
+                        let relative = relativePath(sourceFile, root: root)
+                        let original = try String(contentsOf: sourceFile, encoding: .utf8)
+                        let sourceCandidates = batchBySource[relative] ?? []
+                        let schema = generator.makeSchema(source: original, candidates: sourceCandidates)
+                        isolatedCandidates += schema.isolated
+                        try schema.source.write(to: sandbox.appendingPathComponent(relative), atomically: true, encoding: .utf8)
                     }
-                    warnings += mutantWarnings
-                    if configuration.cache.enabled {
-                        try appendJournal(.init(cacheKey: cacheKey, record: record, warnings: mutantWarnings), to: journal)
+
+                    let batchID = String(SHA256Digest.hash(batch.map(\.id).joined(separator: ":")).prefix(12))
+                    let buildLog = logs.appendingPathComponent("schema-narrowed-build-\(batchID).log")
+                    let buildStarted = Date()
+                    let build = try runner.run(adapter.command(root: sandbox, phase: .buildForTesting, resolved: selection, environment: [:], timeout: TimeInterval(configuration.timeouts.buildSeconds), output: buildLog))
+                    timings.schemaBuildSeconds += Date().timeIntervalSince(buildStarted)
+                    if build.timedOut || build.exitCode != 0 {
+                        if batch.count == 1 {
+                            isolatedCandidates.append(batch[0])
+                            return
+                        }
+                        let midpoint = batch.count / 2
+                        try runSchemaBatch(Array(batch[..<midpoint]))
+                        try runSchemaBatch(Array(batch[midpoint...]))
+                        return
+                    }
+
+                    for candidate in batch.sorted(by: slowestFirst) {
+                        let activation = activationFile(for: candidate, in: activationDirectory, useFile: activationDirectory != nil)
+                        if let activation { try? FileManager.default.removeItem(at: activation) }
+                        var env = ["SWIFT_MUTATION_ID": candidate.id]
+                        if let activation { env["SWIFT_MUTATION_ACTIVATION_FILE"] = activation.path }
+                        let log = logs.appendingPathComponent("mutant-\(candidate.id).log")
+                        let result = try runner.run(adapter.command(root: sandbox, phase: .testWithoutBuilding, resolved: selection, environment: env, timeout: TimeInterval(configuration.timeouts.mutantSeconds), output: log, stopOnActivatedTestFailure: true, activationID: candidate.id, activationFile: activation))
+                        let activated = activationContains(candidate.id, file: activation, output: result.output)
+                        var record = candidate.record
+                        record.durationSeconds = result.elapsed
+                        record.activated = activated
+                        if result.timedOut { record.status = .timeout }
+                        else if !activated { record.status = .noCoverage }
+                        else { record.status = result.exitCode == 0 ? .survived : .killed }
+                        if result.stoppedEarly { record.message = "Stopped after a selected test failed while this mutant was active." }
+                        var mutantWarnings: [IntegrityWarning] = []
+                        if executedTestCount(in: result.output) == 0 && !result.stoppedEarly {
+                            mutantWarnings.append(.init(code: "testsNotExecuted", message: "The selected test command reported zero executed tests.", mutantId: candidate.id))
+                        } else if !activated && result.exitCode != 0 && !result.timedOut {
+                            mutantWarnings.append(.init(code: "testsFailedWithoutActivation", message: "Test execution failed but the mutation was not activated; verdict is noCoverage.", mutantId: candidate.id))
+                        }
+                        warnings += mutantWarnings
+                        records[candidate.id] = record
+                        if configuration.cache.enabled {
+                            try appendJournal(.init(cacheKey: inputDigest + ":" + candidate.id, record: record, warnings: mutantWarnings), to: journal)
+                        }
                     }
                 }
-                records[candidate.id] = record
-                try original.write(to: relativeFile, atomically: true, encoding: .utf8)
+                try runSchemaBatch(schemaCandidates.sorted(by: slowestFirst))
+            }
+
+            let runnableIsolated = isolatedCandidates.filter { records[$0.id] == nil }.sorted(by: slowestFirst)
+            if !runnableIsolated.isEmpty {
+                let requestedWorkers = executionConcurrency(root: root, projectKind: configuration.project.kind, requested: configuration.parallelism, candidateCount: runnableIsolated.count)
+                let workerCount = min(requestedWorkers, runnableIsolated.count)
+                var workerRoots: [URL] = []
+                if workerCount > 1 {
+                    let workerCopyStarted = Date()
+                    for _ in 0..<workerCount {
+                        let worker = try makeSandbox(
+                            from: sandbox,
+                            into: output.appendingPathComponent("sandboxes/isolated-workers", isDirectory: true),
+                            excluding: []
+                        )
+                        // These sandboxes have distinct package roots and therefore need distinct
+                        // SwiftPM build databases. Reusing a copied .build directory can retain
+                        // absolute paths from the source sandbox and produce stale products.
+                        // Each worker's first mutant build warms its own scratch directory.
+                        for sourceFile in sourceFiles {
+                            let relative = relativePath(sourceFile, root: root)
+                            let clean = try String(contentsOf: sourceFile, encoding: .utf8)
+                            try clean.write(to: worker.appendingPathComponent(relative), atomically: true, encoding: .utf8)
+                        }
+                        workerRoots.append(worker)
+                        auxiliarySandboxes.append(worker)
+                    }
+                    timings.sandboxCopySeconds += Date().timeIntervalSince(workerCopyStarted)
+                } else {
+                    workerRoots = [sandbox]
+                }
+                let workerPool = WorkerScratchPool(scratchPaths: workerRoots)
+                let isolatedResults = MutationRunResults()
+                let lockedJournal = configuration.cache.enabled ? LockedJournal(url: journal) : nil
+                let queue = OperationQueue()
+                queue.name = "mutest-swift.isolated-mutants"
+                queue.maxConcurrentOperationCount = workerCount
+                for candidate in runnableIsolated {
+                    queue.addOperation {
+                        let workerRoot = workerPool.acquire()
+                        defer { workerPool.release(workerRoot) }
+                        let original = try? String(contentsOf: sourceByRelative[candidate.source]!, encoding: .utf8)
+                        let relativeFile = workerRoot.appendingPathComponent(candidate.source)
+                        defer {
+                            if let original { try? original.write(to: relativeFile, atomically: true, encoding: .utf8) }
+                        }
+                        do {
+                            guard let original else { throw MutationEngineError.invalidProject("Could not read original source for \(candidate.source).") }
+                            let mutantSource = generator.makeIsolatedSchema(source: original, candidate: candidate)
+                            try mutantSource.write(to: relativeFile, atomically: true, encoding: .utf8)
+                            let log = logs.appendingPathComponent("isolated-\(candidate.id).log")
+                            let buildLog = logs.appendingPathComponent("isolated-build-\(candidate.id).log")
+                            let build = try runner.run(adapter.command(root: workerRoot, phase: .buildForTesting, resolved: selection, environment: [:], timeout: TimeInterval(configuration.timeouts.buildSeconds), output: buildLog))
+                            var record = candidate.record
+                            record.durationSeconds = build.elapsed
+                            if build.timedOut {
+                                record.status = .unbuildable
+                                record.message = "Isolated mutant build timed out after \(configuration.timeouts.buildSeconds) seconds; see \(buildLog.path)."
+                            } else if build.exitCode != 0 {
+                                record.status = .unbuildable
+                                record.message = "Isolated mutant did not compile; see \(buildLog.path)."
+                            } else {
+                                let activation = self.activationFile(for: candidate, in: activationDirectory, useFile: activationDirectory != nil)
+                                if let activation { try? FileManager.default.removeItem(at: activation) }
+                                var env = ["SWIFT_MUTATION_ID": candidate.id]
+                                if let activation { env["SWIFT_MUTATION_ACTIVATION_FILE"] = activation.path }
+                                let result = try runner.run(adapter.command(root: workerRoot, phase: .testWithoutBuilding, resolved: selection, environment: env, timeout: TimeInterval(configuration.timeouts.mutantSeconds), output: log, stopOnActivatedTestFailure: true, activationID: candidate.id, activationFile: activation))
+                                let wasActivated = self.activationContains(candidate.id, file: activation, output: result.output)
+                                record.durationSeconds += result.elapsed
+                                record.activated = wasActivated
+                                if result.timedOut { record.status = .timeout }
+                                else if !wasActivated { record.status = .noCoverage }
+                                else { record.status = result.exitCode == 0 ? .survived : .killed }
+                                var mutantWarnings: [IntegrityWarning] = []
+                                if executedTestCount(in: result.output) == 0 && !result.stoppedEarly {
+                                    mutantWarnings.append(.init(code: "testsNotExecuted", message: "The selected test command reported zero executed tests.", mutantId: candidate.id))
+                                } else if !wasActivated && result.exitCode != 0 && !result.timedOut {
+                                    mutantWarnings.append(.init(code: "testsFailedWithoutActivation", message: "Test execution failed but the mutation was not activated; verdict is noCoverage.", mutantId: candidate.id))
+                                }
+                                if result.stoppedEarly { record.message = "Stopped after a selected test failed while this mutant was active." }
+                                isolatedResults.store(record, warning: mutantWarnings.first, isolatedBuildSeconds: build.elapsed)
+                                if configuration.cache.enabled {
+                                    try lockedJournal?.append(.init(cacheKey: inputDigest + ":" + candidate.id, record: record, warnings: mutantWarnings))
+                                }
+                                return
+                            }
+                            isolatedResults.store(record, isolatedBuildSeconds: build.elapsed)
+                            if configuration.cache.enabled {
+                                try lockedJournal?.append(.init(cacheKey: inputDigest + ":" + candidate.id, record: record))
+                            }
+                        } catch {
+                            var record = candidate.record
+                            record.status = .unbuildable
+                            record.message = "Could not execute isolated mutant: \(error)"
+                            isolatedResults.store(record, warning: .init(code: "mutantExecutionFailed", message: String(describing: error), mutantId: candidate.id))
+                        }
+                    }
+                }
+                queue.waitUntilAllOperationsAreFinished()
+                if ProcessRunner.cancellationRequested { throw ProcessRunnerError.cancelled }
+                let completed = isolatedResults.snapshot()
+                records.merge(completed.records) { _, new in new }
+                warnings += completed.warnings
+                timings.isolatedBuildSeconds += completed.isolatedBuildSeconds
             }
         }
+        if !baselineValidated { try validateBaseline(phase: .baseline) }
+        if let mutationPhaseStarted { timings.mutantRunSeconds = Date().timeIntervalSince(mutationPhaseStarted) }
 
         let orderedRecords = candidates.compactMap { records[$0.id] }
         for record in orderedRecords where record.status == .timeout && !record.activated {
@@ -389,7 +562,12 @@ public struct MutationEngine: Sendable {
             baselineConfigured: baselineReport != nil,
             baselineScopeMatches: baselineScopeMatches
         )
-        let report = MutationReport(scope: .init(sources: selectedSources, tests: selection.identifiers, allTests: selection.allTests), mutants: orderedRecords, integrityWarnings: warnings, qualityGate: gate)
+        let cleanupStarted = Date()
+        auxiliarySandboxes.forEach { try? FileManager.default.removeItem(at: $0) }
+        try? FileManager.default.removeItem(at: sandbox)
+        sandboxRemoved = true
+        timings.cleanupSeconds = Date().timeIntervalSince(cleanupStarted)
+        let report = MutationReport(scope: .init(sources: selectedSources, tests: selection.identifiers, allTests: selection.allTests), mutants: orderedRecords, integrityWarnings: warnings, qualityGate: gate, timings: timings)
         let sourceContents = Dictionary(uniqueKeysWithValues: try sourceFiles.map { file in
             (relativePath(file, root: root), try String(contentsOf: file, encoding: .utf8))
         })
@@ -523,7 +701,7 @@ public struct MutationEngine: Sendable {
     }
 
     private func digestInputs(root: URL, files: [URL], configuration: RunConfiguration, excluding excludedPaths: [URL]) throws -> String {
-        var inputs: [String: Data] = [:]
+        var inputs: [String: URL] = [:]
         let rootPath = root.standardizedFileURL.path.hasSuffix("/") ? root.standardizedFileURL.path : root.standardizedFileURL.path + "/"
         let excludedRelativePaths = excludedPaths.compactMap { path -> String? in
             let absolute = path.standardizedFileURL.path
@@ -539,25 +717,35 @@ public struct MutationEngine: Sendable {
                     continue
                 }
                 guard (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
-                if let contents = try? Data(contentsOf: file) { inputs[relative] = contents }
+                inputs[relative] = file
             }
         }
         // Explicit source selections may include paths outside conventional project enumeration
         // layouts. Add them even if the enumerator filtered or skipped an unusual file type.
-        for file in files { inputs[relativePath(file, root: root)] = try Data(contentsOf: file) }
+        for file in files { inputs[relativePath(file, root: root)] = file }
         let configurationEncoder = JSONEncoder()
         configurationEncoder.outputFormatting = [.sortedKeys]
         let configData = try configurationEncoder.encode(configuration)
         var content = Data()
-        for (path, data) in inputs.sorted(by: { $0.key < $1.key }) {
+        for (path, file) in inputs.sorted(by: { $0.key < $1.key }) {
+            let data = try Data(contentsOf: file, options: [.mappedIfSafe])
+            let fileDigest = SHA256Digest.hash(data)
             content.append(contentsOf: path.utf8)
             content.append(0)
             var length = UInt64(data.count).bigEndian
             withUnsafeBytes(of: &length) { content.append(contentsOf: $0) }
-            content.append(data)
+            content.append(contentsOf: fileDigest.utf8)
         }
         content.append(configData)
-        content.append(contentsOf: "\u{0}0.1.0\u{0}swift-mutation-testing-spec-1.0.0".utf8)
+        let environment = ProcessInfo.processInfo.environment
+        let toolchainKeys = ["MUTEST_TOOLCHAIN_FINGERPRINT", "DEVELOPER_DIR", "TOOLCHAINS", "SDKROOT", "SWIFT_VERSION", "ARCHS", "CONFIGURATION"]
+        for key in toolchainKeys {
+            content.append(0)
+            content.append(contentsOf: key.utf8)
+            content.append(0)
+            content.append(contentsOf: (environment[key] ?? "").utf8)
+        }
+        content.append(contentsOf: "\u{0}0.2.0\u{0}swift-mutation-testing-spec-1.0.0".utf8)
         return SHA256Digest.hash(content)
     }
 
@@ -579,14 +767,29 @@ public struct MutationEngine: Sendable {
                 continue
             }
             let destination = sandbox.appendingPathComponent(relative)
-            let values = try file.resourceValues(forKeys: [.isDirectoryKey])
+            let values = try file.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
             if values.isDirectory == true { try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true) }
             else {
                 try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try FileManager.default.copyItem(at: file, to: destination)
+                if values.isSymbolicLink == true { try FileManager.default.copyItem(at: file, to: destination) }
+                else { try cloneFileOrCopy(from: file, to: destination) }
             }
         }
         return sandbox
+    }
+
+    private func cloneFileOrCopy(from source: URL, to destination: URL) throws {
+        #if canImport(Darwin)
+        let flags = copyfile_flags_t(COPYFILE_ALL | COPYFILE_CLONE)
+        let result = source.path.withCString { sourcePath in
+            destination.path.withCString { destinationPath in
+                copyfile(sourcePath, destinationPath, nil, flags)
+            }
+        }
+        if result == 0 { return }
+        try? FileManager.default.removeItem(at: destination)
+        #endif
+        try FileManager.default.copyItem(at: source, to: destination)
     }
 
     private func activationFile(for candidate: MutationCandidate, in directory: URL?, useFile: Bool) -> URL? {

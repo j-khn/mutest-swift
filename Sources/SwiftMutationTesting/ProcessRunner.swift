@@ -13,10 +13,17 @@ public struct CommandSpec: Sendable {
     public var environment: [String: String]
     public var timeout: TimeInterval
     public var outputFile: URL
+    /// Stops a mutant test run as soon as a selected test fails, but only after this mutant's
+    /// activation marker has been observed. Baseline commands must leave this disabled.
+    public var stopOnActivatedTestFailure: Bool
+    public var activationID: String?
+    public var activationFile: URL?
 
-    public init(executable: String, arguments: [String], workingDirectory: URL, environment: [String: String] = [:], timeout: TimeInterval, outputFile: URL) {
+    public init(executable: String, arguments: [String], workingDirectory: URL, environment: [String: String] = [:], timeout: TimeInterval, outputFile: URL, stopOnActivatedTestFailure: Bool = false, activationID: String? = nil, activationFile: URL? = nil) {
         self.executable = executable; self.arguments = arguments; self.workingDirectory = workingDirectory
         self.environment = environment; self.timeout = timeout; self.outputFile = outputFile
+        self.stopOnActivatedTestFailure = stopOnActivatedTestFailure
+        self.activationID = activationID; self.activationFile = activationFile
     }
 }
 
@@ -26,6 +33,7 @@ public struct CommandResult: Sendable {
     public var elapsed: TimeInterval
     public var output: String
     public var outputFile: URL
+    public var stoppedEarly: Bool = false
 }
 
 public enum ProcessRunnerError: Error, CustomStringConvertible {
@@ -118,6 +126,11 @@ public struct ProcessRunner: Sendable {
         let outputFD = open(command.outputFile.path, O_CREAT | O_WRONLY | O_TRUNC, mode_t(0o644))
         guard outputFD >= 0 else { throw ProcessRunnerError.ioFailed("cannot open \(command.outputFile.path)") }
         defer { _ = close(outputFD) }
+        let monitorFD = command.stopOnActivatedTestFailure ? open(command.outputFile.path, O_RDONLY) : -1
+        if command.stopOnActivatedTestFailure && monitorFD < 0 {
+            throw ProcessRunnerError.ioFailed("cannot monitor \(command.outputFile.path)")
+        }
+        defer { if monitorFD >= 0 { _ = close(monitorFD) } }
 
         var actions: posix_spawn_file_actions_t? = nil
         guard posix_spawn_file_actions_init(&actions) == 0 else { throw ProcessRunnerError.ioFailed("cannot initialize file actions") }
@@ -143,6 +156,9 @@ public struct ProcessRunner: Sendable {
         defer { argumentPointers.forEach { free($0) } }
         var argv: [UnsafeMutablePointer<CChar>?] = argumentPointers.map { Optional($0) } + [nil]
         var inherited = ProcessInfo.processInfo.environment
+        // This value is only a cache-key input for the engine and must not change
+        // the environment observed by the application or its tests.
+        inherited.removeValue(forKey: "MUTEST_TOOLCHAIN_FINGERPRINT")
         command.environment.forEach { inherited[$0.key] = $0.value }
         let environmentPointers = inherited.keys.sorted().compactMap { key -> UnsafeMutablePointer<CChar>? in
             guard let value = inherited[key] else { return nil }
@@ -166,25 +182,47 @@ public struct ProcessRunner: Sendable {
         var status: Int32 = 0
         var timedOut = false
         var exitedNormally = false
+        var stoppedEarly = false
+        var observedOutput = Data()
+        var postActivationOutput = Data()
+        var activationObserved = false
+        var readBuffer = [UInt8](repeating: 0, count: 4096)
         while true {
             let waitResult = waitpid(pid, &status, WNOHANG)
             if waitResult == pid { exitedNormally = true; break }
             if waitResult < 0 && errno != EINTR { break }
+            if monitorFD >= 0 {
+                let wasActiveBeforeRead = activationObserved
+                while true {
+                    let count = readBuffer.withUnsafeMutableBytes { buffer in
+                        read(monitorFD, buffer.baseAddress, buffer.count)
+                    }
+                    guard count > 0 else { break }
+                    let chunk = Data(readBuffer.prefix(count))
+                    observedOutput.append(chunk)
+                    if observedOutput.count > 16_384 { observedOutput.removeFirst(observedOutput.count - 16_384) }
+                    if wasActiveBeforeRead {
+                        postActivationOutput.append(chunk)
+                        if postActivationOutput.count > 16_384 { postActivationOutput.removeFirst(postActivationOutput.count - 16_384) }
+                    }
+                }
+                activationObserved = activationObserved || Self.hasActivation(command, output: observedOutput)
+                let failureAfterActivation = command.activationID.map { id -> Bool in
+                    let marker = Data(("SWIFT_MUTATION_ACTIVATED:\(id)").utf8)
+                    if observedOutput.range(of: marker) != nil {
+                        return Self.containsActivatedTestFailure(observedOutput, activationID: id)
+                    }
+                    return wasActiveBeforeRead && Self.containsTestFailure(postActivationOutput)
+                } ?? false
+                if activationObserved && failureAfterActivation {
+                    stoppedEarly = true
+                    terminateProcessGroup(pid, status: &status)
+                    break
+                }
+            }
             if Date().timeIntervalSince(started) >= command.timeout || isCancellationRequested {
                 timedOut = !isCancellationRequested
-                _ = kill(-pid, SIGTERM)
-                let graceDeadline = Date().addingTimeInterval(terminationGrace)
-                var parentReaped = false
-                while Date() < graceDeadline {
-                    if !parentReaped {
-                        let graceResult = waitpid(pid, &status, WNOHANG)
-                        if graceResult == pid { parentReaped = true }
-                    }
-                    if !processGroupExists(pid) { break }
-                    usleep(50_000)
-                }
-                if processGroupExists(pid) { _ = kill(-pid, SIGKILL) }
-                if !parentReaped { _ = waitpid(pid, &status, 0) }
+                terminateProcessGroup(pid, status: &status)
                 break
             }
             usleep(50_000)
@@ -198,7 +236,47 @@ public struct ProcessRunner: Sendable {
         if (status & 0x7f) == 0 { exitCode = (status >> 8) & 0xff }
         else { exitCode = 128 + (status & 0x7f) }
         let data = (try? Data(contentsOf: command.outputFile)) ?? Data()
-        return CommandResult(exitCode: exitCode, timedOut: timedOut, elapsed: Date().timeIntervalSince(started), output: String(decoding: data, as: UTF8.self), outputFile: command.outputFile)
+        return CommandResult(exitCode: exitCode, timedOut: timedOut, elapsed: Date().timeIntervalSince(started), output: String(decoding: data, as: UTF8.self), outputFile: command.outputFile, stoppedEarly: stoppedEarly)
+    }
+
+    private func terminateProcessGroup(_ pid: pid_t, status: inout Int32) {
+        _ = kill(-pid, SIGTERM)
+        let deadline = Date().addingTimeInterval(terminationGrace)
+        var parentReaped = false
+        while Date() < deadline {
+            if !parentReaped {
+                let result = waitpid(pid, &status, WNOHANG)
+                if result == pid { parentReaped = true }
+            }
+            if !processGroupExists(pid) { break }
+            usleep(50_000)
+        }
+        if processGroupExists(pid) { _ = kill(-pid, SIGKILL) }
+        if !parentReaped { _ = waitpid(pid, &status, 0) }
+    }
+
+    private static func hasActivation(_ command: CommandSpec, output: Data) -> Bool {
+        if let activationID = command.activationID,
+           output.range(of: Data(("SWIFT_MUTATION_ACTIVATED:\(activationID)").utf8)) != nil {
+            return true
+        }
+        guard let activationID = command.activationID, let activationFile = command.activationFile,
+              let data = try? Data(contentsOf: activationFile) else { return false }
+        return String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline).contains(Substring(activationID))
+    }
+
+    private static func containsTestFailure(_ output: Data) -> Bool {
+        let text = String(decoding: output, as: UTF8.self)
+        return text.contains("✘ Test ")
+            || text.contains("Test Case '") && text.contains("' failed")
+            || text.contains("Test Case \"") && text.contains("\" failed")
+    }
+
+    private static func containsActivatedTestFailure(_ output: Data, activationID: String) -> Bool {
+        let text = String(decoding: output, as: UTF8.self)
+        let marker = "SWIFT_MUTATION_ACTIVATED:\(activationID)"
+        guard let activationRange = text.range(of: marker) else { return false }
+        return containsTestFailure(Data(text[activationRange.upperBound...].utf8))
     }
 
     private func terminateRemainingProcessGroup(_ pid: pid_t) {

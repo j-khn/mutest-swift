@@ -32,6 +32,81 @@ struct ProcessRunnerTests {
         #expect(result.elapsed < 3)
     }
 
+    @Test("stops a mutant run after an activated test failure")
+    func stopsAfterActivatedFailure() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("early-stop.log")
+        let activation = directory.appendingPathComponent("activation.txt")
+        let script = #"printf '%s\n' "$MUTANT_ID" > "$ACTIVATION_FILE"; printf 'SWIFT_MUTATION_ACTIVATED:%s\n' "$MUTANT_ID"; printf '✘ Test selectedCase() failed\n'; sleep 10 & wait"#
+        let command = CommandSpec(
+            executable: "/bin/sh",
+            arguments: ["-c", script],
+            workingDirectory: directory,
+            environment: ["MUTANT_ID": "mutant-1", "ACTIVATION_FILE": activation.path],
+            timeout: 8,
+            outputFile: output,
+            stopOnActivatedTestFailure: true,
+            activationID: "mutant-1",
+            activationFile: activation
+        )
+
+        let result = try ProcessRunner(terminationGrace: 0.2).run(command)
+        #expect(result.stoppedEarly)
+        #expect(!result.timedOut)
+        #expect(result.output.contains("selectedCase"))
+        #expect(result.elapsed < 3)
+    }
+
+    @Test("does not stop on test output until this mutant is activated")
+    func requiresActivationBeforeEarlyStop() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("unactivated.log")
+        let activation = directory.appendingPathComponent("activation.txt")
+        let script = #"printf '✘ Test selectedCase() failed\n'; sleep 0.4"#
+        let command = CommandSpec(
+            executable: "/bin/sh",
+            arguments: ["-c", script],
+            workingDirectory: directory,
+            timeout: 3,
+            outputFile: output,
+            stopOnActivatedTestFailure: true,
+            activationID: "mutant-1",
+            activationFile: activation
+        )
+
+        let result = try ProcessRunner().run(command)
+        #expect(!result.stoppedEarly)
+        #expect(result.exitCode == 0)
+        #expect(result.elapsed >= 0.3)
+    }
+
+    @Test("does not stop for a failure printed before activation")
+    func failureMustFollowActivation() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("failure-before-activation.log")
+        let activation = directory.appendingPathComponent("activation.txt")
+        let script = #"printf '✘ Test unrelatedCase() failed\n'; sleep 0.1; printf '%s\n' "$MUTANT_ID" > "$ACTIVATION_FILE"; printf 'SWIFT_MUTATION_ACTIVATED:%s\n' "$MUTANT_ID"; sleep 0.4"#
+        let command = CommandSpec(
+            executable: "/bin/sh",
+            arguments: ["-c", script],
+            workingDirectory: directory,
+            environment: ["MUTANT_ID": "mutant-1", "ACTIVATION_FILE": activation.path],
+            timeout: 3,
+            outputFile: output,
+            stopOnActivatedTestFailure: true,
+            activationID: "mutant-1",
+            activationFile: activation
+        )
+
+        let result = try ProcessRunner().run(command)
+        #expect(!result.stoppedEarly)
+        #expect(result.exitCode == 0)
+        #expect(result.elapsed >= 0.4)
+    }
+
     @Test("cancellation terminates a child process group before returning")
     func cancellation() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)

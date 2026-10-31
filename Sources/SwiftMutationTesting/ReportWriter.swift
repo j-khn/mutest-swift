@@ -28,6 +28,19 @@ public enum MutationReportWriter {
         output += "- **Killed:** \(report.summary.killed) · **Survived:** \(report.summary.survived) · **No coverage:** \(report.summary.noCoverage) · **Timeout:** \(report.summary.timedOut)\n"
         output += "- **Unbuildable:** \(report.summary.unbuildable) · **Suppressed:** \(report.summary.suppressed)\n"
         output += "- **Run:** `\(report.runId)` · **Spec:** \(report.specVersion) · **Engine:** \(report.engine.version)\n\n"
+        if let timings = report.timings {
+            output += "## Phase timings\n\n"
+            output += "| Phase | Seconds |\n|---|---:|\n"
+            output += String(format: "| Sandbox copy | %.2f |\n", timings.sandboxCopySeconds)
+            output += String(format: "| Test discovery | %.2f |\n", timings.testDiscoverySeconds)
+            output += String(format: "| Source discovery | %.2f |\n", timings.sourceDiscoverySeconds)
+            output += String(format: "| Input hashing | %.2f |\n", timings.inputHashSeconds)
+            output += String(format: "| Baseline | %.2f |\n", timings.baselineSeconds)
+            output += String(format: "| Schema build | %.2f |\n", timings.schemaBuildSeconds)
+            output += String(format: "| Mutant runs | %.2f |\n", timings.mutantRunSeconds)
+            output += String(format: "| Isolated builds | %.2f |\n", timings.isolatedBuildSeconds)
+            output += String(format: "| Cleanup | %.2f |\n\n", timings.cleanupSeconds)
+        }
         if !report.integrityWarnings.isEmpty {
             output += "## Integrity warnings\n\n"
             for warning in report.integrityWarnings { output += "- **\(warning.code):** \(warning.message)\n" }

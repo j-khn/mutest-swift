@@ -62,6 +62,13 @@ jobs:
     runs-on: [self-hosted, macos]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .mutest-swift-cache
+          key: mutest-swift-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            mutest-swift-${{ runner.os }}-${{ github.ref_name }}-
+            mutest-swift-${{ runner.os }}-
       - name: Select Xcode toolchain
         run: |
           if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
@@ -69,11 +76,14 @@ jobs:
           fi
           xcodebuild -version
           swift --version
+          fingerprint="$( { xcode-select -p; xcodebuild -version; swift --version; } | shasum -a 256 | awk '{print $1}')"
+          echo "MUTEST_TOOLCHAIN_FINGERPRINT=$fingerprint" >> "$GITHUB_ENV"
       - uses: jamilkhan55/mutest-swift/.github/actions/run-mutation-testing@main
         with:
           project-path: .
           project-kind: swift-package
           operator-tier: experimental
+          cache-path: .mutest-swift-cache
 ```
 
 Run it from the Actions tab with **Run workflow**. It tests the full target and uploads the report. Add `push:` or `pull_request:` under `on:` if you want it to run automatically.
@@ -94,6 +104,14 @@ Use the same CLI or Action, and set the Xcode project details. For the Action, r
 ```
 
 Replace the simulator name with one installed on your Mac. All seven operators are currently experimental.
+
+## Performance and cache
+
+- With no test selector, every run uses the full configured test target. `--source` limits mutation locations only.
+- A mutant run may stop after a selected test fails only after the engine verifies that mutant activated. Survivors and no-coverage mutants run the complete selected test scope.
+- The JSON report includes phase timings for sandbox copying, discovery, input hashing, baseline, schema builds, mutant runs, isolated builds, and cleanup. The Markdown report shows the same timings.
+- The optional verdict cache can resume completed mutants across GitHub Actions runs. The engine verifies source and test inputs, selectors, build settings, toolchain fingerprint, and engine version before reusing a verdict.
+- Use `no-cache: true` on the Action for a clean speed benchmark. That disables both cache reads and writes.
 
 ## More
 

@@ -91,6 +91,78 @@ struct MutationEngineIntegrationTests {
         #expect(report.summary.score == nil)
     }
 
+    @Test("narrows an incompatible schema and keeps compatible mutants in a shared build")
+    func narrowsIncompatibleSchema() throws {
+        let source = """
+        public enum Rules {
+            public static func join(_ left: String, _ right: String) -> String { left + right }
+            public static func enabled(_ value: Bool) -> Bool { value && true }
+        }
+        """
+        let fixture = try makePackage(
+            source: source,
+            tests: """
+            import Logic
+            import Testing
+
+            @Test("checks compatible and incompatible candidates")
+            func checksRules() {
+                #expect(Rules.join("a", "b") == "ab")
+                #expect(Rules.enabled(true))
+            }
+            """
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let output = fixture.root.deletingLastPathComponent().appendingPathComponent("mutation-output-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: output) }
+        let configuration = configuration(for: fixture.root, operators: [.arithmetic, .boolean])
+
+        let report = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+        let candidates = SwiftMutationGenerator().generate(source: source, relativePath: "Sources/Logic/Rules.swift", operators: [.arithmetic, .boolean])
+        let boolean = try #require(candidates.first(where: { $0.operatorID == .boolean }))
+        let invalidArithmetic = try #require(candidates.first(where: { $0.operatorID == .arithmetic }))
+
+        #expect(report.summary.killed == 1)
+        #expect(report.summary.unbuildable == 1)
+        #expect(FileManager.default.fileExists(atPath: output.appendingPathComponent("logs/mutant-\(boolean.id).log").path))
+        #expect(!FileManager.default.fileExists(atPath: output.appendingPathComponent("logs/isolated-build-\(boolean.id).log").path))
+        #expect(FileManager.default.fileExists(atPath: output.appendingPathComponent("logs/isolated-build-\(invalidArithmetic.id).log").path))
+    }
+
+    @Test("runs isolated statement mutants in independent Swift Testing workers")
+    func parallelIsolatedStatementMutants() throws {
+        let source = """
+        public enum Rules {
+            public static func left() { print("left") }
+            public static func right() { print("right") }
+        }
+        """
+        let fixture = try makePackage(
+            source: source,
+            tests: """
+            import Logic
+            import Testing
+
+            @Test("calls both statement functions")
+            func callsFunctions() {
+                Rules.left()
+                Rules.right()
+            }
+            """
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let output = fixture.root.deletingLastPathComponent().appendingPathComponent("mutation-output-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: output) }
+        var configuration = configuration(for: fixture.root, operators: [.removeSideEffects])
+        configuration.parallelism = 2
+
+        let report = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+        #expect(report.mutants.count == 2)
+        #expect(report.summary.survived == 2)
+        #expect(report.mutants.allSatisfy { $0.activated && $0.status == .survived })
+        #expect(report.mutants.allSatisfy { FileManager.default.fileExists(atPath: output.appendingPathComponent("logs/isolated-build-\($0.id).log").path) })
+    }
+
     @Test("keeps expression-bodied side-effect mutants from forcing the whole schema into isolated builds")
     func statementFormMutantsDoNotDisableSchema() throws {
         let source = """
@@ -135,7 +207,7 @@ struct MutationEngineIntegrationTests {
     @Test("aborts without a score when baseline tests fail")
     func baselineFailure() throws {
         let fixture = try makePackage(
-            source: "public enum Rules { public static func value() -> Int { 1 } }",
+            source: "public enum Rules { public static func value() -> Int { true ? 1 : 2 } }",
             tests: """
             import Logic
             import Testing
@@ -161,6 +233,8 @@ struct MutationEngineIntegrationTests {
         }
         #expect(didAbort)
         #expect(!FileManager.default.fileExists(atPath: output.appendingPathComponent("report.json").path))
+        #expect(FileManager.default.fileExists(atPath: output.appendingPathComponent("logs/schema-build.log").path))
+        #expect(FileManager.default.fileExists(atPath: output.appendingPathComponent("logs/baseline.log").path))
     }
 
     @Test("records a timeout as detected only after activation is verified")
