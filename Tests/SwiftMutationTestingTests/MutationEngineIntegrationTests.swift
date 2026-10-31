@@ -91,6 +91,47 @@ struct MutationEngineIntegrationTests {
         #expect(report.summary.score == nil)
     }
 
+    @Test("keeps expression-bodied side-effect mutants from forcing the whole schema into isolated builds")
+    func statementFormMutantsDoNotDisableSchema() throws {
+        let source = """
+        public enum Rules {
+            public static func sum(_ left: Int, _ right: Int) -> Int { return left + right }
+            public static func clamped(_ value: Int) -> Int { max(0, value) }
+        }
+        """
+        let fixture = try makePackage(
+            source: source,
+            tests: """
+            import Logic
+            import Testing
+
+            @Test("checks arithmetic and clamping")
+            func checksRules() {
+                #expect(Rules.sum(2, 2) == 4)
+                #expect(Rules.clamped(3) == 3)
+            }
+            """
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let output = fixture.root.deletingLastPathComponent().appendingPathComponent("mutation-output-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: output) }
+        let configuration = configuration(for: fixture.root, testName: "checks arithmetic and clamping", operators: [.arithmetic, .removeSideEffects])
+
+        let report = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+        let arithmetic = try #require(SwiftMutationGenerator().generate(
+            source: source,
+            relativePath: "Sources/Logic/Rules.swift",
+            operators: [.arithmetic]
+        ).first)
+        let sharedSchemaMutantLog = output.appendingPathComponent("logs/mutant-\(arithmetic.id).log")
+        let isolatedArithmeticBuildLog = output.appendingPathComponent("logs/isolated-build-\(arithmetic.id).log")
+
+        #expect(report.summary.killed == 1)
+        #expect(report.summary.unbuildable == 1)
+        #expect(FileManager.default.fileExists(atPath: sharedSchemaMutantLog.path))
+        #expect(!FileManager.default.fileExists(atPath: isolatedArithmeticBuildLog.path))
+    }
+
     @Test("aborts without a score when baseline tests fail")
     func baselineFailure() throws {
         let fixture = try makePackage(

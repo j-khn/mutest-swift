@@ -186,9 +186,14 @@ public struct MutationEngine: Sendable {
             let activationDirectory: URL? = configuration.project.kind == .swiftPackage ? logs : nil
             for (relative, items) in candidatesBySource {
                 let original = try String(contentsOf: sourceByRelative[relative]!, encoding: .utf8)
-                let schema = generator.makeSchema(source: original, candidates: items)
-                schemaCandidates += items.filter { schema.included.contains($0.id) }
+                // Statement-form rewrites cannot always live inside an expression-bodied
+                // function's implicit return. Keep them out of the shared schema so one such
+                // candidate cannot force every other mutant into an isolated build.
+                let expressionCandidates = items.filter { !$0.usesStatementForm }
+                let schema = generator.makeSchema(source: original, candidates: expressionCandidates)
+                schemaCandidates += expressionCandidates.filter { schema.included.contains($0.id) }
                 isolatedCandidates += schema.isolated
+                isolatedCandidates += items.filter(\.usesStatementForm)
                 let destination = sandbox.appendingPathComponent(relative)
                 try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try schema.source.write(to: destination, atomically: true, encoding: .utf8)
