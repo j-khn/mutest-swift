@@ -20,8 +20,7 @@ let package = Package(
                 "MutationTestingSpec",
                 .product(name: "SwiftSyntax", package: "swift-syntax"),
                 .product(name: "SwiftParser", package: "swift-syntax")
-            ],
-            resources: [.copy("Resources")]
+            ]
         ),
         .executableTarget(name: "swift-mutation-testing", dependencies: ["SwiftMutationTesting"]),
         .testTarget(name: "MutationTestingSpecTests", dependencies: ["SwiftMutationTesting"]),
