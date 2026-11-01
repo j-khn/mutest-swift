@@ -109,6 +109,24 @@ struct XcodeWorkerTests {
         #expect(fake.snapshot().devices.count == 1)
     }
 
+    @Test("ownership recovery survives removal of a previous Actions report folder")
+    func persistentRecovery() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let fake = FakeSimulators(), registry = root.appendingPathComponent("registry")
+        let oldOutput = root.appendingPathComponent("old-checkout/reports")
+        var abandoned: XcodeSimulatorPool? = try XcodeSimulatorPool(template: template, count: 1, output: oldOutput,
+            registryDirectory: registry, run: fake.run, teardownRun: fake.run)
+        _ = try abandoned?.waitUntilReady()
+        let oldID = try #require(abandoned?.workers.first?.simulatorID)
+        abandoned = nil
+        try FileManager.default.removeItem(at: oldOutput)
+        let recovered = try XcodeSimulatorPool(template: template, count: 1, output: root.appendingPathComponent("new-checkout/reports"),
+            registryDirectory: registry, run: fake.run, teardownRun: fake.run)
+        _ = try recovered.waitUntilReady()
+        #expect(fake.snapshot().devices[oldID] == nil)
+        #expect(recovered.cleanup().isEmpty)
+    }
+
     @Test("cloning a shut-down template never changes or deletes that template")
     func cloneTemplate() throws {
         var inventory = try inventory()

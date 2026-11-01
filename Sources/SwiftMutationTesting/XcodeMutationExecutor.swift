@@ -49,6 +49,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
     private let state = XcodeExecutionState()
     private let commandRunner: XcodeCommandRunner
     private let cleanupRunner: XcodeCommandRunner
+    private let workerRegistryDirectory: URL?
 
     init(configuration: RunConfiguration, adapter: NativeTestAdapter, selection: ResolvedTestSelection,
          sandbox: URL, output: URL, sources: [String: String],
@@ -56,17 +57,20 @@ final class XcodeMutationExecutor: @unchecked Sendable {
          onVerdict: @escaping @Sendable (MutantRecord, [IntegrityWarning]) throws -> Void,
          onCompletion: @escaping @Sendable (MutationCandidate, MutantStatus) -> Void,
          commandRunner: @escaping XcodeCommandRunner = { try ProcessRunner().run($0) },
-         cleanupRunner: @escaping XcodeCommandRunner = { try ProcessRunner(ignoresCancellation: true).run($0) }) {
+         cleanupRunner: @escaping XcodeCommandRunner = { try ProcessRunner(ignoresCancellation: true).run($0) },
+         workerRegistryDirectory: URL? = nil) {
         self.configuration = configuration; self.adapter = adapter; self.selection = selection
         self.sandbox = sandbox; self.output = output; self.sources = sources
         self.createSandbox = createSandbox; self.onVerdict = onVerdict; self.onCompletion = onCompletion
         self.commandRunner = commandRunner; self.cleanupRunner = cleanupRunner
+        self.workerRegistryDirectory = workerRegistryDirectory
     }
 
     func run(template: XcodeSimulatorTemplate, candidates: [MutationCandidate], historicalDurations: [String: TimeInterval]) throws -> XcodeMutationExecutionResult {
         let workerCount = min(configuration.parallelism, max(1, candidates.count))
         mutationLog("Xcode workers: requested \(configuration.parallelism), active \(workerCount). Each mutant uses the complete selected test scope.")
-        let pool = try XcodeSimulatorPool(template: template, count: workerCount, output: output, run: commandRunner, teardownRun: cleanupRunner)
+        let pool = try XcodeSimulatorPool(template: template, count: workerCount, output: output,
+            registryDirectory: workerRegistryDirectory ?? XcodeSimulatorPool.persistentRegistryDirectory(), run: commandRunner, teardownRun: cleanupRunner)
         var cleaned = false
         defer { for worker in pool.workers { if let root = worker.isolatedRoot { try? FileManager.default.removeItem(at: root) } } }
         defer { if !cleaned { for warning in pool.cleanup() { mutationLog(warning.message) } } }

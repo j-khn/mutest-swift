@@ -110,6 +110,7 @@ final class XcodeSimulatorPool: @unchecked Sendable {
     private struct Ownership: Codable { var runID: String; var devices: [OwnedDevice] }
     let workers: [XcodeSimulatorWorker]
     private let directory: URL
+    private let artifactDirectory: URL
     private let logs: URL
     private let run: XcodeCommandRunner
     private let teardownRun: XcodeCommandRunner
@@ -125,17 +126,20 @@ final class XcodeSimulatorPool: @unchecked Sendable {
     private var closed = false
     private let bootTimeout: TimeInterval
 
-    init(template: XcodeSimulatorTemplate, count: Int, output: URL, bootTimeout: TimeInterval = 120,
+    init(template: XcodeSimulatorTemplate, count: Int, output: URL, registryDirectory: URL? = nil, bootTimeout: TimeInterval = 120,
          run: @escaping XcodeCommandRunner = { try ProcessRunner().run($0) },
          teardownRun: @escaping XcodeCommandRunner = { try ProcessRunner(ignoresCancellation: true).run($0) }) throws {
         let manager = FileManager.default
-        let parent = output.appendingPathComponent("workers")
+        let workerParent = output.appendingPathComponent("workers")
+        let parent = registryDirectory ?? workerParent
         try manager.createDirectory(at: parent, withIntermediateDirectories: true)
+        try manager.createDirectory(at: workerParent, withIntermediateDirectories: true)
         let logs = output.appendingPathComponent("logs/simulators")
         try manager.createDirectory(at: logs, withIntermediateDirectories: true)
         try Self.recoverStalePools(parent: parent, logs: logs, run: teardownRun)
         let runID = UUID().uuidString
         let directory = parent.appendingPathComponent(runID)
+        let artifactDirectory = workerParent.appendingPathComponent(runID)
         try manager.createDirectory(at: directory, withIntermediateDirectories: true)
         let fd = open(directory.appendingPathComponent("owner.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, mode_t(0o600))
         guard fd >= 0, flock(fd, LOCK_EX | LOCK_NB) == 0 else {
@@ -158,7 +162,7 @@ final class XcodeSimulatorPool: @unchecked Sendable {
                 }
                 ownership.devices[number - 1].id = id
                 try Self.persist(ownership, in: directory)
-                workers.append(.init(number: number, simulatorID: id, directory: directory.appendingPathComponent("worker-\(number)")))
+                workers.append(.init(number: number, simulatorID: id, directory: artifactDirectory.appendingPathComponent("worker-\(number)")))
             }
         } catch {
             _ = try? Self.removeOwned(ownership, directory: directory, logs: logs, run: teardownRun)
@@ -166,6 +170,7 @@ final class XcodeSimulatorPool: @unchecked Sendable {
             throw error
         }
         self.directory = directory; self.logs = logs; self.run = run; self.teardownRun = teardownRun
+        self.artifactDirectory = artifactDirectory
         self.ownership = ownership; self.workers = workers; self.available = workers
         self.lockFD = fd; self.startedAt = startedAt; self.bootTimeout = bootTimeout
         bootQueue.maxConcurrentOperationCount = workers.count
@@ -230,8 +235,17 @@ final class XcodeSimulatorPool: @unchecked Sendable {
         defer { _ = flock(lockFD, LOCK_UN); _ = close(lockFD); lockFD = -1 }
         do {
             let failures = try Self.removeOwned(ownership, directory: directory, logs: logs, run: teardownRun)
+            if failures.isEmpty, FileManager.default.fileExists(atPath: artifactDirectory.path) { try FileManager.default.removeItem(at: artifactDirectory) }
             return failures.map { .init(code: "simulatorCleanupFailed", message: $0) }
         } catch { return [.init(code: "simulatorCleanupFailed", message: "\(error). Ownership retained at \(directory.path).") ] }
+    }
+
+    static func persistentRegistryDirectory() -> URL {
+        // Keep ownership outside the checkout and RUNNER_TEMP: Actions may erase both
+        // after SIGKILL, but the next invocation still needs to identify abandoned devices.
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share")
+        return support.appendingPathComponent("mutest-swift/worker-ownership")
     }
 
     private func boot(_ worker: XcodeSimulatorWorker) throws {

@@ -64,7 +64,8 @@ struct XcodeExecutionTests {
                 let path = root.appendingPathComponent("isolated-\(UUID().uuidString)")
                 try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
                 return path
-            }, onVerdict: { _, _ in }, onCompletion: { _, _ in }, commandRunner: fake.run, cleanupRunner: fake.run)
+            }, onVerdict: { _, _ in }, onCompletion: { _, _ in }, commandRunner: fake.run, cleanupRunner: fake.run,
+            workerRegistryDirectory: root.appendingPathComponent("registry"))
         let candidates = SwiftMutationGenerator().generate(source: source, relativePath: "Rules.swift", operators: [.boolean, .logical])
         return try executor.run(template: .init(deviceType: "phone", runtime: "ios", runtimeVersion: "27", runtimeBuild: "1"), candidates: candidates, historicalDurations: [:])
     }
