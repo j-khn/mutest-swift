@@ -1,155 +1,155 @@
 # mutest-swift
 
-Mutation testing for Swift packages and Xcode apps. Use it from the command line or GitHub Actions.
+`mutest-swift` checks whether your tests catch mistakes. It makes small temporary changes to your Swift code and runs your tests. If a test catches a change, your tests detected it. If all selected tests pass, you may need another test for that case.
+
+It works with Swift packages and Xcode projects or workspaces. Your original files are left unchanged.
 
 ## Quick Start
 
 ### 1. Run locally
 
-Requirements: macOS 14 or newer, Xcode, Python 3, and a Swift 6.4-compatible toolchain.
-
-Clone the tool, enter its folder, and point `./run` at your codebase:
+Requirements: macOS 14 or newer, Swift 6.0 or newer, and Python 3. Install Xcode to test Xcode projects or iOS apps.
 
 ```sh
+mkdir -p ~/Tools
+cd ~/Tools
 git clone https://github.com/jamilkhan55/mutest-swift.git
 cd mutest-swift
-./run /path/to/your/project
+./run /path/to/MyApp.xcodeproj
 ```
 
-The first run builds the command line tool. Swift packages run directly. For an Xcode project or workspace, `./run` lists the schemes, test targets, and installed iPhone simulators, then asks you to choose. Press Enter to choose the first scheme or simulator. To launch it from your project folder without giving a project path, use the script from your cloned tool repository:
+For a Swift package, pass its folder instead:
 
 ```sh
-cd /path/to/your/project
-/path/to/mutest-swift/run
+./run /path/to/MySwiftPackage
 ```
 
-For this sample project, choose **MutationTest** to run the combined app test target, including tests from the local packages. Choose a `Checkout...` scheme to run only that package's tests. In the scheme menu, press Enter to choose the first option.
+For an Xcode project or workspace, the tool asks which scheme, test target, and simulator to use. Press Enter to choose the first scheme or simulator. You can pass those choices as options to skip the prompts.
 
-Pass choices as flags to skip the prompts. `--target` selects the Xcode test target; `--target-file` and `--target-tests` select tests. `--source` limits mutation locations, while tests still run across the full configured target unless test selectors are supplied.
+The repository includes an example Xcode app. To try it, run:
 
 ```sh
-./run /path/to/MyApp.xcodeproj \
-  --scheme MyApp \
-  --target MyAppTests \
-  --destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
-  --parallelism 2
+./run Fixtures/XcodeApp/MutationFixture.xcodeproj
 ```
 
-Useful options:
+`--source` limits which code is changed. If you do not provide test selectors, the tool runs the full configured test target.
+
+<details>
+<summary>CLI options</summary>
+
+| Option | Values or default | What it does |
+| --- | --- | --- |
+| `PROJECT` | Swift package folder, `.xcodeproj`, `.xcworkspace`, or folder containing one; defaults to `.` | Project to test. |
+| `--scheme NAME` | Xcode scheme | Selects an Xcode scheme. Asked interactively if missing. |
+| `--target NAME` or `--test-target NAME` | Xcode test target | Selects the tests to run. Asked interactively if missing. |
+| `--destination VALUE` | Xcode destination string | Chooses the simulator. Asked interactively if missing. |
+| `--parallelism N` or `--parallelization N` | Positive number; default `2` | Runs up to this many mutants at once. |
+| `--source PATH` | Source file or folder; repeatable | Limits where mutations are made. No value means all discovered source files. |
+| `--target-file PATH` or `--test-file PATH` | Test file; repeatable | Selects tests from the named file. No test selectors means all tests in the target. |
+| `--suite NAME` | Test suite name; repeatable | Selects tests in the named suite. |
+| `--target-tests NAME` or `--test NAME` | Test name; repeatable | Selects the named test. |
+| `--operators NAMES` | Comma-separated: `relational`, `boolean`, `logical`, `arithmetic`, `negateConditional`, `swapTernary`, `removeSideEffects` | Limits the kinds of changes made. |
+| `--operator-tier TIER` | `experimental` (default) or `all` | Chooses the operator set. `conservative` and `default` are not available yet. |
+| `--xcodebuild-arg NAME=VALUE` | Xcode build setting; repeatable | Passes a setting to Xcode builds. |
+| `--output PATH` | Folder | Writes reports to this folder. Default: `.swift-mutation-testing` in the project. |
+| `--no-cache` | Flag | Does not reuse cached mutant results. |
+| `--no-resume` | Flag | Starts without reusing results from an interrupted run. |
+| `--validate` | Flag | Checks project settings without running mutation tests. |
+| `--help` | Flag | Shows the full command help. |
+
+Examples:
 
 ```sh
 ./run --help
-./run /path/to/project --validate
-./run /path/to/project --parallelization 2 --target-file CheckoutTests.swift --target-tests checkoutTotal
-./run /path/to/project --source Sources/Checkout
+./run /path/to/MyApp.xcodeproj --scheme MyApp --target MyAppTests --destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' --parallelism 2
+./run /path/to/MyApp.xcodeproj --source Sources/Checkout --target-file CheckoutTests.swift
 ```
 
-Reports are written to `.swift-mutation-testing/` inside the project by default. The tool mutates a temporary copy, leaving your source files unchanged. Xcode simulator builds use the Mac's architecture by default. To override it, pass settings such as `--xcodebuild-arg ARCHS=arm64 --xcodebuild-arg ONLY_ACTIVE_ARCH=YES`.
+</details>
+
+<details>
+<summary>Mutation testing words</summary>
+
+| Word | Simple meaning |
+| --- | --- |
+| **Baseline test** | Tests run on the original code before mutations. If these fail, the tool stops without a score. |
+| **Mutant** | One small, intentional change to the code. |
+| **Generated mutants** | All candidate changes the tool created. Some may not compile or reach a test run. |
+| **Killed** | A test failed after the changed code ran. The tests caught that change. |
+| **Detected** | Changes caught by a failing test, plus timed-out changes confirmed to have run. |
+| **Survived** | The selected tests passed while the change was active. This may point to a missing test. |
+| **No coverage** | The selected tests passed, but did not run the changed code. |
+| **Unbuildable** | The changed code did not compile. It is excluded from the mutation score. |
+| **Mutation score** | Detected mutants divided by detected plus undetected mutants. |
+
+</details>
 
 ### 2. Run with GitHub Actions
 
-`mutest-swift` is private. First allow access from your other private repositories in **mutest-swift → Settings → Actions → General → Access**. GitHub explains this setting [here](https://docs.github.com/en/actions/how-tos/reuse-automations/share-across-private-repositories).
+GitHub reads workflow files from `.github/workflows/`, so create your workflow there. The example below runs on pushes and pull requests to `main`; change the branch name if your repository uses another one. It runs the full configured test target unless you add test selectors.
 
-In your app repository, create `.github/workflows/mutation.yml`:
+<small><em>Note: `mutest-swift` is private for now. You need permission to clone it and to let your repository use its GitHub Action. Grant Action access in `mutest-swift` → Settings → Actions → General → Access. <a href="https://docs.github.com/en/actions/how-tos/reuse-automations/share-across-private-repositories">GitHub explains this setting</a>.</em></small>
+
+Create `.github/workflows/mutation.yml`:
 
 ```yaml
-name: Mutation testing
+name: Mutation tests
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
   mutation-testing:
-    runs-on: [self-hosted, macos]
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - name: Check Xcode
+        run: xcodebuild -version
+      - name: Run mutation tests
+        uses: jamilkhan55/mutest-swift/.github/actions/run-mutation-testing@main
         with:
-          path: .mutest-swift-cache
-          key: mutest-swift-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
-          restore-keys: |
-            mutest-swift-${{ runner.os }}-${{ github.ref_name }}-
-            mutest-swift-${{ runner.os }}-
-      - name: Select Xcode toolchain
-        run: |
-          if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
-            echo "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer" >> "$GITHUB_ENV"
-          fi
-          xcodebuild -version
-          swift --version
-          fingerprint="$( { xcode-select -p; xcodebuild -version; swift --version; } | shasum -a 256 | awk '{print $1}')"
-          echo "MUTEST_TOOLCHAIN_FINGERPRINT=$fingerprint" >> "$GITHUB_ENV"
-      - name: Build mutest-swift CLI
-        id: mutest-swift-cli
-        uses: jamilkhan55/mutest-swift/.github/actions/build-cli@main
-        with:
-          cache-path: .mutest-swift-cache
-      - uses: jamilkhan55/mutest-swift/.github/actions/run-mutation-testing@main
-        with:
-          tool-path: ${{ steps.mutest-swift-cli.outputs.tool-path }}
-          project-path: .
-          project-kind: swift-package
-          operator-tier: experimental
-          cache-path: .mutest-swift-cache
+          project-path: MyApp.xcodeproj
+          project-kind: xcode-project
+          scheme: MyApp
+          test-target: MyAppTests
+          destination: platform=iOS Simulator,name=iPhone 17,OS=latest
 ```
 
-Run it from the Actions tab with **Run workflow**. It tests the full target and uploads the report. Add `push:` or `pull_request:` under `on:` if you want it to run automatically.
+Replace `MyApp` and the simulator name with values from your project and runner. For a Swift package, use `project-path: .` and `project-kind: swift-package`; omit `scheme`, `test-target`, and `destination`. The Action builds the tool, runs the tests, adds the Markdown report to the workflow summary, and uploads the reports.
 
-### 3. For an Xcode app
+<details>
+<summary>GitHub Action inputs</summary>
 
-Use the same CLI or Actions, and set the Xcode project details. Build the CLI before the mutation step so the mutation timing excludes compilation:
+| Input | Values or default | What it does |
+| --- | --- | --- |
+| `project-path` | Required | Package folder, `.xcodeproj`, or `.xcworkspace`. |
+| `project-kind` | `swift-package` (default), `xcode-project`, `xcode-workspace` | Project type. |
+| `scheme`, `test-target`, `destination` | Xcode values | Xcode scheme, test target, and simulator destination. |
+| `source` | One relative path per line; blank means all discovered source | Limits mutation locations. |
+| `test-file`, `suite`, `test` | One selector per line; blank means full target | Optionally limits tests. |
+| `operator-tier` | `experimental` (default) or `all` | Chooses the operator set. `conservative` and `default` are not available yet. |
+| `parallelism` | Positive number; default `2` | Maximum number of concurrent mutants. |
+| `xcodebuild-arg` | One `NAME=VALUE` per line | Extra Xcode build settings. |
+| `cache-path` | Folder; blank uses default locations | Sets where reusable results and the CLI build cache are stored. |
+| `no-cache`, `no-resume` | `true` or `false`; default `false` | Disables cache use or resuming prior results. |
+| `no-suppressions`, `require-suppression-reason` | `true` or `false`; default `false` | Controls mutation suppression comments. |
+| `build-timeout` | Seconds; default `600` | Maximum build time. |
+| `baseline-timeout` | Seconds; default `300` | Maximum baseline test time. |
+| `mutant-timeout` | Seconds; default `120` | Maximum test time per mutant. |
+| `minimum-score` | Number from `0` to `1` | Fails the job if the score is too low. |
+| `baseline-report` | Path to an earlier `report.json` | Compares this run with an earlier report. |
+| `maximum-score-drop` | Number from `0` to `1` | Maximum allowed score drop from the baseline report. |
+| `fail-on-new-survivors` | `true` or `false`; default `false` | Fails if this run adds survivors compared with the baseline. |
+| `maximum-integrity-warnings` | Zero or higher; default `0` | Maximum allowed integrity warnings. |
+| `output-path` | Folder; default `.swift-mutation-testing` | Where reports are written. |
+| `tool-path` | Executable path; blank by default | Use a previously built CLI. Usually leave blank. |
 
-```yaml
-- name: Build mutest-swift CLI
-  id: mutest-swift-cli
-  uses: jamilkhan55/mutest-swift/.github/actions/build-cli@main
-  with:
-    cache-path: .mutest-swift-cache
-- name: Run mutation testing
-  uses: jamilkhan55/mutest-swift/.github/actions/run-mutation-testing@main
-  with:
-    tool-path: ${{ steps.mutest-swift-cli.outputs.tool-path }}
-    project-path: MyApp.xcodeproj
-    project-kind: xcode-project
-    scheme: MyApp
-    test-target: MyAppTests
-    destination: platform=iOS Simulator,name=iPhone 17,OS=latest
-    operator-tier: experimental
-    parallelism: "2"
-```
-
-Replace the simulator name with one installed on your Mac. All seven operators are currently experimental.
-
-For two iOS Simulator mutation workers from the CLI:
-
-```sh
-./run /path/to/MyApp.xcodeproj \
-  --scheme MyApp --target MyAppTests \
-  --destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
-  --parallelism 2
-```
-
-The tool creates two temporary simulators matching that destination, checks the baseline on each, and runs one mutant per worker. Each mutant uses all tests in `MyAppTests` unless you supply test selectors. Use `--parallelism 1` (or `parallelism: "1"` in the Action) for serial execution. Simulators are reused during the campaign and deleted afterward; the original simulator is used only as a template. Xcode workspaces use `--project-kind xcode-workspace`. Other destination platforms run serially and log the reason.
-
-A shut-down template is cloned to reuse its completed simulator setup. A booted template uses freshly created matching devices so its running state is preserved. Small campaigns can spend more time preparing simulators than they save through parallel testing; compare worker counts using the reported total time.
-
-## Performance and cache
-
-- With no test selector, every run uses the full configured test target. `--source` limits mutation locations only.
-- A mutant run may stop after a selected test fails only after the engine verifies that mutant activated. Survivors and no-coverage mutants run the complete selected test scope.
-- The JSON report includes phase timings for sandbox copying, discovery, input hashing, baseline, schema builds, mutant runs, isolated builds, and cleanup. The Markdown report shows the same timings.
-- The run summary shows requested/active workers, simulator setup time, baseline tests per worker, baseline execution count, actual mutant test runs (including retries), generated mutants, source files, and total elapsed time. JSON stores these measurements in `execution`; mutant tests may stop after a verified kill, so their test-run count is separate from baseline test cases.
-- Baseline test counts come from the native framework summaries. A parameterized Swift Testing declaration can contain multiple argument cases within one reported test.
-- The optional verdict cache can resume completed mutants across GitHub Actions runs. The engine verifies source and test inputs, selectors, build settings, toolchain fingerprint, and engine version before reusing a verdict.
-- Use `no-cache: true` on the Action for a clean speed benchmark. That disables both cache reads and writes.
-
-## More
-
-- CLI options: `./run --help`.
-- Tool tests: `swift test`.
-- Operator details: [`Docs/OPERATORS.md`](Docs/OPERATORS.md).
-- Shared rules and report schemas: [`mutest-core`](https://github.com/jamilkhan55/mutest-core).
+</details>
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+No license is provided at this time.

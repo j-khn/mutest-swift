@@ -41,7 +41,7 @@ inputs:
     required: false
     default: ""
   operator-tier:
-    description: conservative, default, experimental, or all
+    description: experimental or all; conservative and default are unavailable until operators have campaign data
     required: false
     default: experimental
   parallelism:
