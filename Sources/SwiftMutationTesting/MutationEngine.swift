@@ -909,7 +909,7 @@ public struct MutationEngine: Sendable {
             content.append(0)
             content.append(contentsOf: (environment[key] ?? "").utf8)
         }
-        content.append(contentsOf: "\u{0}0.3.0-xcode-workers-v1\u{0}\(runtimeFingerprint)\u{0}swift-mutation-testing-spec-1.0.0".utf8)
+        content.append(contentsOf: "\u{0}0.3.0-xcode-workers-v2\u{0}\(runtimeFingerprint)\u{0}swift-mutation-testing-spec-1.0.0".utf8)
         return SHA256Digest.hash(content)
     }
 

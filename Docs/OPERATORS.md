@@ -6,13 +6,13 @@ The operator IDs are defined by the shared spec repository's `operators/catalog.
 
 | Operator | Current Swift rewrite | Current eligibility and limits |
 |---|---|---|
-| `relational` | `<` → `>=`, `<=` → `>`, `>` → `<=`, `>=` → `<`, `==` ↔ `!=`, `===` ↔ `!==` | Infix comparisons parsed by SwiftSyntax. A type-invalid rewrite becomes unbuildable after isolated fallback. |
-| `boolean` | `true` ↔ `false` | Boolean literal expressions. |
+| `relational` | `<` → `<=` or `>`, `<=` → `<` or `>=`, `>` → `>=` or `<`, `>=` → `>` or `<=`, `==` ↔ `!=` | Infix comparisons parsed by SwiftSyntax. Identity comparisons (`===`, `!==`) are not mutated. A type-invalid rewrite becomes unbuildable after isolated fallback. |
+| `boolean` | `true` ↔ `false` | Boolean literal expressions, except literals used in an exhaustive Boolean `switch` pattern. |
 | `logical` | `&&` ↔ `||` | Infix logical operators. Each operator occurrence is a separate first-order mutant. |
 | `arithmetic` | `+` ↔ `-`, `*` ↔ `/`, `%` → `*` | Infix arithmetic operators. Type and division-by-zero behavior is not statically proven; compile failures are unbuildable, runtime failures produce normal mutant test verdicts, and hung tests use the configured timeout. |
-| `negateConditional` | `condition` → `!(condition)` | `if` conditions containing a single expression. `guard`, `while`, and multi-condition clauses are not generated in V1. |
-| `swapTernary` | `condition ? then : else` → `condition ? else : then` | Swift ternary expressions. The complete parsed condition is kept intact. |
-| `removeSideEffects` | A standalone call statement is skipped when its mutant ID is active | Only standalone function-call expressions in code-block statements are considered. The engine does not infer whether a call is pure; equivalent survivors should be reviewed. Value-producing expression contexts are not rewritten. |
+| `negateConditional` | `condition` → `!(condition)` | Expression conditions in `if`, `guard`, and `while`, including each expression in a multi-condition clause. Pattern-binding conditions are not generated. |
+| `swapTernary` | `condition ? then : else` → `condition ? else : then` | Swift ternary expressions with different branch expressions. The complete parsed condition is kept intact. |
+| `removeSideEffects` | A standalone call statement is skipped when its mutant ID is active | Standalone function-call expressions in code-block statements, except `print`, `debugPrint`, assertion/precondition/fatal-error calls, `self.init`, and `super.init`. Calls that are the sole statement in a body are skipped. The engine does not infer whether other calls are pure; equivalent survivors should be reviewed. |
 
 Overlapping source spans are not combined into one schema; they are built and tested as isolated mutants. Unsupported syntax is skipped and does not increase the generated mutant count.
 

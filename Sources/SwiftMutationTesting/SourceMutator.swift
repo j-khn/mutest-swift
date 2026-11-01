@@ -46,7 +46,11 @@ public struct SwiftMutationGenerator: Sendable {
             var value = candidate
             value.suppressionReason = suppressions.reason(forLine: candidate.line)
             return value
-        }.sorted { $0.span.start < $1.span.start }
+        }.sorted {
+            if $0.span.start != $1.span.start { return $0.span.start < $1.span.start }
+            if $0.span.end != $1.span.end { return $0.span.end < $1.span.end }
+            return $0.id < $1.id
+        }
     }
 
     /// Produces one runtime-switch schema from candidate expressions. Candidates that overlap
@@ -54,8 +58,9 @@ public struct SwiftMutationGenerator: Sendable {
     public func makeSchema(source: String, candidates: [MutationCandidate]) -> (source: String, included: Set<String>, isolated: [MutationCandidate]) {
         var seen = Set<String>()
         let sorted = candidates.filter { seen.insert($0.id).inserted }.sorted { lhs, rhs in
-            if lhs.span.start == rhs.span.start { return lhs.span.end < rhs.span.end }
-            return lhs.span.start < rhs.span.start
+            if lhs.span.start != rhs.span.start { return lhs.span.start < rhs.span.start }
+            if lhs.span.end != rhs.span.end { return lhs.span.end < rhs.span.end }
+            return lhs.id < rhs.id
         }
         var isolated: [MutationCandidate] = []
         var groups: [[MutationCandidate]] = []
@@ -185,8 +190,10 @@ private final class CandidateVisitor: SyntaxVisitor {
     override func visit(_ node: InfixOperatorExprSyntax) -> SyntaxVisitorContinueKind {
         guard let binary = node.operator.as(BinaryOperatorExprSyntax.self) else { return .visitChildren }
         let op = binary.operator.text
-        if enabled.contains(.relational), let replacement = Self.relational[op] {
-            add(node, operator: .relational, replacement: replaceOperator(in: node, token: binary.operator, with: replacement))
+        if enabled.contains(.relational), let replacements = Self.relational[op] {
+            for replacement in replacements {
+                add(node, operator: .relational, replacement: replaceOperator(in: node, token: binary.operator, with: replacement))
+            }
         }
         if enabled.contains(.logical), let replacement = Self.logical[op] {
             add(node, operator: .logical, replacement: replaceOperator(in: node, token: binary.operator, with: replacement))
@@ -198,15 +205,15 @@ private final class CandidateVisitor: SyntaxVisitor {
     }
 
     override func visit(_ node: BooleanLiteralExprSyntax) -> SyntaxVisitorContinueKind {
-        guard enabled.contains(.boolean) else { return .skipChildren }
+        guard enabled.contains(.boolean), !isInExhaustiveBooleanSwitchPattern(node) else { return .skipChildren }
         let replacement = node.literal.text == "true" ? "false" : "true"
         add(node, operator: .boolean, replacement: replacement)
         return .skipChildren
     }
 
-    override func visit(_ node: IfExprSyntax) -> SyntaxVisitorContinueKind {
-        guard enabled.contains(.negateConditional), node.conditions.count == 1,
-              case .expression(let condition) = node.conditions.first?.condition else { return .visitChildren }
+    override func visit(_ node: ConditionElementSyntax) -> SyntaxVisitorContinueKind {
+        guard enabled.contains(.negateConditional),
+              case .expression(let condition) = node.condition else { return .visitChildren }
         let original = text(of: condition)
         add(condition, operator: .negateConditional, replacement: "!(\(original))")
         return .visitChildren
@@ -217,6 +224,8 @@ private final class CandidateVisitor: SyntaxVisitor {
         let condition = text(of: node.condition)
         let thenValue = text(of: node.thenExpression)
         let elseValue = text(of: node.elseExpression)
+        guard thenValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                != elseValue.trimmingCharacters(in: .whitespacesAndNewlines) else { return .visitChildren }
         add(node, operator: .swapTernary, replacement: "(\(condition)) ? (\(elseValue)) : (\(thenValue))")
         return .visitChildren
     }
@@ -226,8 +235,10 @@ private final class CandidateVisitor: SyntaxVisitor {
         for (index, element) in elements.enumerated() {
             if let binary = element.as(BinaryOperatorExprSyntax.self) {
                 let op = binary.operator.text
-                if enabled.contains(.relational), let replacement = Self.relational[op] {
-                    add(node, operator: .relational, replacement: replaceOperator(in: node, token: binary.operator, with: replacement))
+                if enabled.contains(.relational), let replacements = Self.relational[op] {
+                    for replacement in replacements {
+                        add(node, operator: .relational, replacement: replaceOperator(in: node, token: binary.operator, with: replacement))
+                    }
                 }
                 if enabled.contains(.logical), let replacement = Self.logical[op] {
                     add(node, operator: .logical, replacement: replaceOperator(in: node, token: binary.operator, with: replacement))
@@ -240,6 +251,8 @@ private final class CandidateVisitor: SyntaxVisitor {
                 let condition = text(from: elements[0], through: elements[index - 1])
                 let thenValue = text(of: ternary.thenExpression)
                 let elseValue = text(from: elements[index + 1], through: elements[elements.count - 1])
+                guard thenValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                        != elseValue.trimmingCharacters(in: .whitespacesAndNewlines) else { continue }
                 let replacement = "(\(condition)) ? (\(elseValue)) : (\(thenValue))"
                 add(node, operator: .swapTernary, replacement: replacement)
             }
@@ -249,16 +262,92 @@ private final class CandidateVisitor: SyntaxVisitor {
 
     override func visit(_ node: CodeBlockItemSyntax) -> SyntaxVisitorContinueKind {
         guard enabled.contains(.removeSideEffects), case .expr(let expression) = node.item,
-              expression.is(FunctionCallExprSyntax.self) else { return .visitChildren }
-        let expressionText = text(of: expression)
-        add(node, operator: .removeSideEffects, replacement: "()", original: text(of: node), usesStatementForm: true, requiresIsolation: node.parent?.as(CodeBlockItemListSyntax.self)?.count == 1)
-        _ = expressionText
+              let call = expression.as(FunctionCallExprSyntax.self) else { return .visitChildren }
+        let callee = call.calledExpression.trimmedDescription
+        guard !Self.deniedSideEffectCallees.contains(callee), !isSoleStatementOfBody(node) else {
+            return .visitChildren
+        }
+        add(node, operator: .removeSideEffects, replacement: "()", original: text(of: node), usesStatementForm: true)
         return .visitChildren
     }
 
-    private static let relational: [String: String] = ["<": ">=", "<=": ">", ">": "<=", ">=": "<", "==": "!=", "!=": "==", "===": "!==", "!==": "==="]
+    private static let relational: [String: [String]] = [
+        ">": [">=", "<"],
+        ">=": [">", "<="],
+        "<": ["<=", ">"],
+        "<=": ["<", ">="],
+        "==": ["!="],
+        "!=": ["=="],
+    ]
     private static let logical: [String: String] = ["&&": "||", "||": "&&"]
     private static let arithmetic: [String: String] = ["+": "-", "-": "+", "*": "/", "/": "*", "%": "*"]
+    private static let deniedSideEffectCallees: Set<String> = [
+        "print", "debugPrint", "assert", "assertionFailure",
+        "precondition", "preconditionFailure", "fatalError",
+        "super.init", "self.init",
+    ]
+
+    private func isInExhaustiveBooleanSwitchPattern(_ node: BooleanLiteralExprSyntax) -> Bool {
+        guard let item = ancestor(of: node, as: SwitchCaseItemSyntax.self),
+              node.position >= item.pattern.position,
+              node.endPosition <= item.pattern.endPosition,
+              let switchExpr = ancestor(of: item, as: SwitchExprSyntax.self) else {
+            return false
+        }
+
+        for element in switchExpr.cases {
+            guard let switchCase = element.as(SwitchCaseSyntax.self),
+                  let label = switchCase.label.as(SwitchCaseLabelSyntax.self),
+                  label.caseItems.allSatisfy({ isBooleanLiteralPattern($0.pattern) }) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func isBooleanLiteralPattern(_ pattern: PatternSyntax) -> Bool {
+        guard let expression = pattern.as(ExpressionPatternSyntax.self)?.expression else { return false }
+        return booleanLiteralCount(in: expression).map { $0 > 0 } ?? false
+    }
+
+    private func booleanLiteralCount(in expression: ExprSyntax) -> Int? {
+        if expression.is(BooleanLiteralExprSyntax.self) { return 1 }
+        if expression.is(DiscardAssignmentExprSyntax.self) { return 0 }
+        guard let tuple = expression.as(TupleExprSyntax.self) else { return nil }
+
+        var count = 0
+        for element in tuple.elements {
+            guard element.label == nil,
+                  let elementCount = booleanLiteralCount(in: element.expression) else { return nil }
+            count += elementCount
+        }
+        return count
+    }
+
+    private func ancestor<T: SyntaxProtocol>(of node: some SyntaxProtocol, as type: T.Type) -> T? {
+        var current = node.parent
+        while let syntax = current {
+            if let match = syntax.as(T.self) { return match }
+            current = syntax.parent
+        }
+        return nil
+    }
+
+    private func isSoleStatementOfBody(_ node: CodeBlockItemSyntax) -> Bool {
+        guard let list = node.parent?.as(CodeBlockItemListSyntax.self), list.count == 1,
+              let owner = list.parent else { return false }
+
+        if owner.is(ClosureExprSyntax.self) || owner.is(AccessorBlockSyntax.self)
+            || owner.is(SwitchCaseSyntax.self) {
+            return true
+        }
+
+        guard let block = owner.as(CodeBlockSyntax.self), let holder = block.parent else { return false }
+        return holder.is(FunctionDeclSyntax.self)
+            || holder.is(InitializerDeclSyntax.self)
+            || holder.is(DeinitializerDeclSyntax.self)
+            || holder.is(AccessorDeclSyntax.self)
+    }
 
     private func replaceOperator(in node: SyntaxProtocol, token: TokenSyntax, with replacement: String) -> String {
         let nodeStart = node.positionAfterSkippingLeadingTrivia.utf8Offset
