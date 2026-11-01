@@ -26,12 +26,6 @@ For a Swift package, pass its folder instead:
 
 For an Xcode project or workspace, the tool asks which scheme, test target, and simulator to use. Press Enter to choose the first scheme or simulator. You can pass those choices as options to skip the prompts.
 
-The repository includes an example Xcode app. To try it, run:
-
-```sh
-./run Fixtures/XcodeApp/MutationFixture.xcodeproj
-```
-
 `--source` limits which code is changed. If you do not provide test selectors, the tool runs the full configured test target.
 
 <details>

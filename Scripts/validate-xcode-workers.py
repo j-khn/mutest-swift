@@ -4,11 +4,12 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shutil
 import statistics
 import subprocess
-import tempfile
 import time
+
+
+
 
 
 def simulators():
@@ -23,13 +24,10 @@ def verdicts(report):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tool", type=Path, required=True)
-    parser.add_argument("--engine", type=Path, required=True)
     parser.add_argument("--app-root", type=Path, required=True)
     parser.add_argument("--destination", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--repetitions", type=int, default=3)
-    parser.add_argument("--skip-fixtures", action="store_true")
-    parser.add_argument("--extra-fixtures-only", action="store_true")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     results = {"checks": [], "benchmarks": [], "error": None}
@@ -96,81 +94,6 @@ def main():
         return report
 
     try:
-        if not args.skip_fixtures:
-            with tempfile.TemporaryDirectory(prefix="mutest-xcode-acceptance-") as temporary:
-                fixture = Path(temporary) / "Fixture Project with spaces"
-                shutil.copytree(args.engine / "Fixtures/XcodeApp", fixture)
-                project = fixture / "MutationFixture.xcodeproj"
-                source = "Sources/CheckoutRule.swift"
-                if not args.extra_fixtures_only:
-                    serial = campaign("fixture-project-serial", project, "MutationFixture", "MutationFixtureTests", 1, source, operators="relational,logical")
-                    parallel = campaign("fixture-project-parallel", project, "MutationFixture", "MutationFixtureTests", 2, source, operators="relational,logical")
-                    assert verdicts(serial) == verdicts(parallel), "Fixture serial/parallel verdict mismatch"
-                    assert serial["scope"] == parallel["scope"]
-                    baseline = "\n".join(p.read_text() for p in (args.output / "fixture-project-parallel/logs").glob("baseline-worker-*.log"))
-                    assert "CheckoutRuleTests" in baseline and "Test run with" in baseline, "Both frameworks must run"
-                    workspace = fixture / "Fixture.xcworkspace"
-                    workspace.mkdir()
-                    (workspace / "contents.xcworkspacedata").write_text('<Workspace version="1.0"><FileRef location="group:MutationFixture.xcodeproj"/></Workspace>')
-                    selected = campaign("fixture-workspace-custom-parameterized", workspace, "MutationFixture", "MutationFixtureTests", 2, source,
-                                        ("--test", "evaluates supported weight boundaries"), "logical")
-                    assert not selected["scope"]["allTests"] and len(selected["scope"]["tests"]) == 1
-                    assert selected["execution"]["baselineTestCount"] == 1
-                    legacy = campaign("fixture-project-test-file", project, "MutationFixture", "MutationFixtureTests", 2, source,
-                                      ("--test-file", "Tests/CheckoutRuleTests.swift"), "logical")
-                    assert legacy["execution"]["baselineTestCount"] == 2
-                isolated_fixture = Path(temporary) / "Isolated workers"
-                shutil.copytree(fixture, isolated_fixture)
-                rule = isolated_fixture / source
-                prefix, suffix = rule.read_text().rsplit("}", 1)
-                rule.write_text(prefix + 'public static func left() { print("left") }\npublic static func right() { print("right") }\n}' + suffix)
-                tests = isolated_fixture / "Tests/CheckoutRuleTests.swift"
-                tests.write_text(tests.read_text().replace("final class CheckoutRuleTests: XCTestCase {", "final class CheckoutRuleTests: XCTestCase {\nfunc testSideEffects() { CheckoutRule.left(); CheckoutRule.right() }"))
-                isolated = campaign("fixture-isolated-workers", isolated_fixture / "MutationFixture.xcodeproj", "MutationFixture", "MutationFixtureTests", 2, source, operators="removeSideEffects")
-                assert isolated["summary"]["survived"] == 2 and isolated["summary"]["generated"] == 2
-                assert all(m["activated"] for m in isolated["mutants"])
-                assert isolated["timings"]["isolatedBuildSeconds"] > 0
-
-                narrowed_fixture = Path(temporary) / "Narrowed schema"
-                shutil.copytree(fixture, narrowed_fixture)
-                rule = narrowed_fixture / source
-                rule.write_text('''public enum CheckoutRule {
-                    public static func total(cents: Int, member: Bool, couponPercent: Int) -> Int { couponPercent > 100 ? 0 : 8900 }
-                    public static func canUseExpress(weightGrams: Int, destinationCode: String) -> Bool { weightGrams > 0 && weightGrams <= 25000 && !destinationCode.isEmpty }
-                    public static func sum(_ left: Int, _ right: Int) -> Int { left + right }
-                    public static func join(_ left: String, _ right: String) -> String { left + right }
-                }''')
-                tests = narrowed_fixture / "Tests/CheckoutRuleTests.swift"
-                tests.write_text(tests.read_text().replace("final class CheckoutRuleTests: XCTestCase {", 'final class CheckoutRuleTests: XCTestCase {\nfunc testFallback() { XCTAssertEqual(CheckoutRule.sum(2, 2), 4); XCTAssertEqual(CheckoutRule.join("a", "b"), "ab") }'))
-                narrowed = campaign("fixture-schema-narrowing", narrowed_fixture / "MutationFixture.xcodeproj", "MutationFixture", "MutationFixtureTests", 2, source, operators="arithmetic")
-                assert narrowed["summary"]["unbuildable"] == 1 and narrowed["summary"]["killed"] == 1
-                assert list((args.output / "fixture-schema-narrowing/logs").glob("schema-narrowed-*.log"))
-                if not args.extra_fixtures_only:
-                    # Keep the test processes alive after launch so cancellation exercises two active workers.
-                    tests = fixture / "Tests/CheckoutRuleSwiftTestingTests.swift"
-                    tests.write_text("import Foundation\n" + tests.read_text().replace("func expressEligibility() {", 'func expressEligibility() { if ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"] != nil { Thread.sleep(forTimeInterval: 20) }').replace("func parameterizedWeight(weightGrams: Int) {", 'func parameterizedWeight(weightGrams: Int) { if ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"] != nil { Thread.sleep(forTimeInterval: 20) }'))
-                    rule = fixture / source
-                    rule.write_text(rule.read_text().replace("cents >= 0 && couponPercent >= 0 && couponPercent <= 100", "(0...100).contains(couponPercent)"))
-                    output = args.output / "fixture-cancellation"
-                    output.mkdir()
-                    with (output / "cli.log").open("w") as log:
-                        process = subprocess.Popen(command(project, "MutationFixture", "MutationFixtureTests", 2, output, source, operators="logical"), stdout=log, stderr=subprocess.STDOUT)
-                        try:
-                            deadline = time.monotonic() + 300
-                            while len(list((output / "logs").glob("mutant-*.log"))) < 2:
-                                assert process.poll() is None, "Cancellation fixture exited before both workers started"
-                                assert time.monotonic() < deadline, "Cancellation fixture startup timed out"
-                                time.sleep(0.2)
-                            process.terminate()
-                            process.wait(timeout=180)
-                        finally:
-                            if process.poll() is None:
-                                process.terminate()
-                                process.wait(timeout=180)
-                            clean_check()
-                    assert process.returncode != 0 and not (output / "report.json").exists()
-                    results["checks"].append({"name": "cancel-two-active-workers", "passed": True})
-
         app_project = args.app_root / "MutationTest.xcodeproj"
         app_sources = [
             "Modules/CheckoutCustomer/Sources/CheckoutCustomer/LoyaltyPointsCalculator.swift",

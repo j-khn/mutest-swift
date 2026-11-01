@@ -18,7 +18,7 @@ Overlapping source spans are not combined into one schema; they are built and te
 
 ## Campaign tiers
 
-All seven operators remain **experimental**. The included fixture exercises syntax and runner behavior; it is not evidence for tier promotion.
+All seven operators remain **experimental**. Automated tests exercise syntax and runner behavior; they are not evidence for tier promotion.
 
 Promotion requires a repeatable campaign over at least three real Swift packages, with at least ten generated mutants per operator in each package. Record generated, unbuildable, killed, survived, no-coverage, and timed-out counts. Review surviving mutants to estimate the equivalent-survivor rate. Use the median kill rate across packages and the thresholds in the shared spec:
 
