@@ -1,8 +1,38 @@
 # mutest-swift
 
-`mutest-swift` checks whether your tests catch mistakes. It makes small temporary changes to your Swift code and runs your tests. If a test catches a change, your tests detected it. If all selected tests pass, you may need another test for that case.
+## What is Mutation Testing?
 
-It works with Swift packages and Xcode projects or workspaces. Your original files are left unchanged.
+Mutation testing checks whether your unit tests catch mistakes.
+
+Instead of only checking whether your code passes tests, a tool temporarily changes your code in small ways—like changing `+` to `-` or `true` to `false`—and runs your existing tests.
+
+- If a test fails, it caught the change.
+- If the tests pass, they missed the change. Your test suite may have a blind spot.
+
+Mutation testing is not a way to write code. You do not write special code for it; a tool temporarily changes your existing code to check your tests.
+
+<details>
+<summary>Mutation testing words</summary>
+
+| Word | Simple meaning |
+| --- | --- |
+| **Baseline test** | Tests run on the original code first. If these fail, the tool stops without a score. |
+| **Mutant** | One small, intentional code change. |
+| **Generated mutants** | All candidate changes the tool created. Some may not compile or reach a test run. |
+| **Killed** | A test failed after the changed code ran. The tests caught that change. |
+| **Detected** | Changes caught by a failing test, plus timed-out changes confirmed to have run. |
+| **Survived** | The selected tests passed while the change was active. This may point to a missing test. |
+| **No coverage** | The selected tests passed, but did not run the changed code. |
+| **Unbuildable** | The changed code did not compile. It is excluded from the mutation score. |
+| **Mutation score** | Detected mutants divided by detected plus undetected mutants. |
+
+</details>
+
+## What is mutest-swift?
+
+`mutest-swift` is a mutation-testing tool for Swift packages and Xcode projects or workspaces. It temporarily changes your source code and runs your tests; your original files stay unchanged.
+
+[`mutest-core`](https://github.com/jamilkhan55/mutest-core) defines the shared mutation-testing rules and report contract. `mutest-swift` implements them for Swift.
 
 ## Quick Start
 
@@ -58,23 +88,6 @@ Examples:
 ./run /path/to/MyApp.xcodeproj --scheme MyApp --target MyAppTests --destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' --parallelism 2
 ./run /path/to/MyApp.xcodeproj --source Sources/Checkout --target-file CheckoutTests.swift
 ```
-
-</details>
-
-<details>
-<summary>Mutation testing words</summary>
-
-| Word | Simple meaning |
-| --- | --- |
-| **Baseline test** | Tests run on the original code before mutations. If these fail, the tool stops without a score. |
-| **Mutant** | One small, intentional change to the code. |
-| **Generated mutants** | All candidate changes the tool created. Some may not compile or reach a test run. |
-| **Killed** | A test failed after the changed code ran. The tests caught that change. |
-| **Detected** | Changes caught by a failing test, plus timed-out changes confirmed to have run. |
-| **Survived** | The selected tests passed while the change was active. This may point to a missing test. |
-| **No coverage** | The selected tests passed, but did not run the changed code. |
-| **Unbuildable** | The changed code did not compile. It is excluded from the mutation score. |
-| **Mutation score** | Detected mutants divided by detected plus undetected mutants. |
 
 </details>
 
