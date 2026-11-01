@@ -200,8 +200,10 @@ public struct NativeTestAdapter: Sendable {
     public var project: ProjectConfiguration
     public var selection: TestSelection
     public var xcodebuildArguments: [String]
-    public init(project: ProjectConfiguration, selection: TestSelection, xcodebuildArguments: [String] = []) {
+    public var xcodeDerivedDataPath: URL?
+    public init(project: ProjectConfiguration, selection: TestSelection, xcodebuildArguments: [String] = [], xcodeDerivedDataPath: URL? = nil) {
         self.project = project; self.selection = selection; self.xcodebuildArguments = xcodebuildArguments
+        self.xcodeDerivedDataPath = xcodeDerivedDataPath
     }
 
     public func command(root: URL, phase: TestPhase, resolved: ResolvedTestSelection, environment: [String: String], timeout: TimeInterval, output: URL, scratchPath: URL? = nil, stopOnActivatedTestFailure: Bool = false, activationID: String? = nil, activationFile: URL? = nil, xcodeContext: XcodeTestExecutionContext? = nil) throws -> CommandSpec {
@@ -242,12 +244,16 @@ public struct NativeTestAdapter: Sendable {
             if phase == .resolveDependencies {
                 args += project.kind == .xcodeWorkspace ? ["-workspace", projectPath] : ["-project", projectPath]
                 args += ["-scheme", scheme]
-                if let derivedDataPath = xcodeContext?.derivedDataPath {
+                if let derivedDataPath = xcodeContext?.derivedDataPath ?? xcodeDerivedDataPath {
                     args += ["-clonedSourcePackagesDirPath", derivedDataPath.appendingPathComponent("SourcePackages", isDirectory: true).path]
                 }
                 return .init(executable: "/usr/bin/xcrun", arguments: args, workingDirectory: root, environment: environment, timeout: timeout, outputFile: output)
             }
             let destination = xcodeContext?.destination ?? project.destination
+            if phase == .buildForTesting || phase == .baseline {
+                // Worker count controls tests, not Xcode's independent build scheduler.
+                args += ["-jobs", "2"]
+            }
             if phase == .testWithoutBuilding, let manifest = xcodeContext?.testRunFile {
                 args += ["-xctestrun", manifest.path]
             } else {
@@ -257,7 +263,7 @@ public struct NativeTestAdapter: Sendable {
                 args += XcodeSimulatorBuildSettings.defaults(for: xcodebuildArguments, destination: destination)
             }
             if let destination { args += ["-destination", destination] }
-            args += ["-derivedDataPath", (xcodeContext?.derivedDataPath ?? root.appendingPathComponent(".swift-mutation-testing/DerivedData")).path]
+            args += ["-derivedDataPath", (xcodeContext?.derivedDataPath ?? xcodeDerivedDataPath ?? root.appendingPathComponent(".swift-mutation-testing/DerivedData")).path]
             args += ["-parallel-testing-enabled", "NO"]
             if stopOnActivatedTestFailure {
                 // Expected mutant failures do not need a full simulator sysdiagnose.

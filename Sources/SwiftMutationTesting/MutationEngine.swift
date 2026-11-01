@@ -16,6 +16,7 @@ enum ProjectFilePaths {
 public enum MutationEngineError: Error, CustomStringConvertible {
     case invalidProject(String)
     case baselineFailed(log: URL, timedOut: Bool)
+    case baselineBuildFailed(log: URL, timedOut: Bool)
     case baselineRanNoTests(log: URL)
     case dependencyResolutionFailed(log: URL, timedOut: Bool)
     case noSourceFiles(String)
@@ -24,6 +25,7 @@ public enum MutationEngineError: Error, CustomStringConvertible {
         switch self {
         case .invalidProject(let message), .noSourceFiles(let message), .invalidSelection(let message): return message
         case .baselineFailed(let log, let timedOut): return "Baseline tests \(timedOut ? "timed out" : "failed"); no mutation score was produced. Log: \(log.path)"
+        case .baselineBuildFailed(let log, let timedOut): return "Xcode test build \(timedOut ? "timed out" : "failed"); tests did not start and no mutation score was produced. Log: \(log.path)"
         case .baselineRanNoTests(let log): return "Baseline command succeeded but ran zero tests; no mutation score was produced. Check test selectors and log: \(log.path)"
         case .dependencyResolutionFailed(let log, let timedOut): return "Package dependency resolution \(timedOut ? "timed out" : "failed"); no mutation score was produced. Log: \(log.path)"
         }
@@ -256,12 +258,13 @@ public struct MutationEngine: Sendable {
         )
         timings.testDiscoverySeconds = Date().timeIntervalSince(testDiscoveryStarted)
         mutationLog("Test discovery complete: \(selection.identifiers.count) selected test identifiers\(selection.allTests ? " (full target)" : "").")
-        let adapter = NativeTestAdapter(project: adapterProject, selection: configuration.tests, xcodebuildArguments: xcodebuildArguments)
+        let xcodeBuildWorkspace = configuration.project.kind == .swiftPackage ? nil : try XcodeBuildWorkspace()
+        defer { xcodeBuildWorkspace?.cleanup() }
+        let adapter = NativeTestAdapter(project: adapterProject, selection: configuration.tests, xcodebuildArguments: xcodebuildArguments, xcodeDerivedDataPath: xcodeBuildWorkspace?.derivedData)
         let runner = ProcessRunner()
         mutationLog("Resolving package dependencies…")
         let dependencyResolutionStarted = Date()
         let dependencyLog = logs.appendingPathComponent("dependency-resolution.log")
-        let dependencyDerivedData = sandbox.appendingPathComponent(".swift-mutation-testing/DerivedData", isDirectory: true)
         let dependencyCommand = try adapter.command(
             root: sandbox,
             phase: .resolveDependencies,
@@ -269,10 +272,9 @@ public struct MutationEngine: Sendable {
             environment: [:],
             timeout: TimeInterval(configuration.timeouts.buildSeconds),
             output: dependencyLog,
-            xcodeContext: configuration.project.kind == .swiftPackage ? nil : .init(
-                destination: configuration.project.destination ?? "",
-                derivedDataPath: dependencyDerivedData
-            )
+            xcodeContext: xcodeBuildWorkspace.map {
+                .init(destination: configuration.project.destination ?? "", derivedDataPath: $0.derivedData)
+            }
         )
         let dependencyResult = try runner.run(dependencyCommand)
         guard !dependencyResult.timedOut, dependencyResult.exitCode == 0 else {
@@ -387,7 +389,7 @@ public struct MutationEngine: Sendable {
             })
             let lockedJournal = configuration.cache.enabled ? LockedJournal(url: journal) : nil
             let executor = XcodeMutationExecutor(configuration: configuration, adapter: adapter, selection: selection,
-                sandbox: sandbox, output: output, sources: sources,
+                sandbox: sandbox, output: output, sources: sources, buildWorkspace: xcodeBuildWorkspace,
                 createSandbox: { try self.makeSandbox(from: sandbox, localPackageRoots: sandboxLayout.localPackages, into: output.appendingPathComponent("sandboxes/isolated-workers"), excluding: []) },
                 onVerdict: { record, warnings in
                     try lockedJournal?.append(.init(cacheKey: inputDigest + ":" + record.id, record: record, warnings: warnings))
@@ -1093,7 +1095,7 @@ public struct MutationEngine: Sendable {
             content.append(0)
             content.append(contentsOf: (environment[key] ?? "").utf8)
         }
-        content.append(contentsOf: "\u{0}0.3.0-xcode-workers-v2\u{0}\(runtimeFingerprint)\u{0}mutest-swift-cache-v3".utf8)
+        content.append(contentsOf: "\u{0}0.3.0-xcode-workers-v3\u{0}\(runtimeFingerprint)\u{0}mutest-swift-cache-v3".utf8)
         return SHA256Digest.hash(content)
     }
 

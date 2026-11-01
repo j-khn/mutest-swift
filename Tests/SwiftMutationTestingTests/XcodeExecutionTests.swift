@@ -10,11 +10,17 @@ private final class FakeXcode: @unchecked Sendable {
     private(set) var maximumActive = 0
     private(set) var maximumActiveBaselines = 0
     private(set) var attempts: [(String, String, TimeInterval)] = []
+    private(set) var builds: [CommandSpec] = []
+    private(set) var initialBuildSawBoot = false
+    private(set) var maximumActiveBuilds = 0
+    private var activeBuilds = 0
     let failSchema: Bool
+    let failOriginalBuild: Bool
     let timeoutFirstAttempt: Bool
     let mismatchBaseline: Bool
-    init(failSchema: Bool = false, timeoutFirstAttempt: Bool = false, mismatchBaseline: Bool = false) {
+    init(failSchema: Bool = false, failOriginalBuild: Bool = false, timeoutFirstAttempt: Bool = false, mismatchBaseline: Bool = false) {
         self.failSchema = failSchema; self.timeoutFirstAttempt = timeoutFirstAttempt; self.mismatchBaseline = mismatchBaseline
+        self.failOriginalBuild = failOriginalBuild
     }
 
     func run(_ command: CommandSpec) throws -> CommandResult {
@@ -22,7 +28,22 @@ private final class FakeXcode: @unchecked Sendable {
         func argument(_ option: String) -> String { command.arguments.firstIndex(of: option).map { command.arguments[$0 + 1] } ?? "" }
         var output = "", exit: Int32 = 0, timeout = false
         if command.arguments.contains("build-for-testing") {
-            if failSchema && command.outputFile.lastPathComponent.hasPrefix("schema-") { exit = 65 }
+            let initial = ["schema-build.log", "baseline-build.log"].contains(command.outputFile.lastPathComponent)
+            let hasBooted = simulators.snapshot().commands.contains { $0.first == "boot" }
+            lock.lock()
+            builds.append(command)
+            initialBuildSawBoot = initialBuildSawBoot || (initial && hasBooted)
+            activeBuilds += 1; maximumActiveBuilds = max(maximumActiveBuilds, activeBuilds)
+            lock.unlock()
+            defer {
+                let bootedDuringBuild = simulators.snapshot().commands.contains { $0.first == "boot" }
+                lock.lock()
+                initialBuildSawBoot = initialBuildSawBoot || (initial && bootedDuringBuild)
+                activeBuilds -= 1
+                lock.unlock()
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+            if failOriginalBuild || (failSchema && command.outputFile.lastPathComponent.hasPrefix("schema-")) { exit = 65 }
             else {
                 let products = URL(fileURLWithPath: argument("-derivedDataPath")).appendingPathComponent("Build/Products")
                 try FileManager.default.createDirectory(at: products, withIntermediateDirectories: true)
@@ -67,7 +88,7 @@ struct XcodeExecutionTests {
             createSandbox: {
                 let path = root.appendingPathComponent("isolated-\(UUID().uuidString)")
                 try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
-                return path
+                return ProjectSandbox(container: path, root: path, localPackages: [])
             }, onVerdict: { _, _ in }, onCompletion: { _, _ in }, commandRunner: fake.run, cleanupRunner: fake.run,
             workerRegistryDirectory: root.appendingPathComponent("registry"))
         let candidates = SwiftMutationGenerator().generate(source: source, relativePath: "Rules.swift", operators: [.boolean, .logical])
@@ -86,6 +107,13 @@ struct XcodeExecutionTests {
         #expect(parallelFake.maximumActiveBaselines == 2)
         #expect(parallel.mutantTestRunCount == parallel.records.count)
         #expect(parallelFake.simulators.snapshot().devices.count == 1)
+        #expect(!parallelFake.initialBuildSawBoot)
+        for command in parallelFake.builds {
+            let index = try #require(command.arguments.firstIndex(of: "-derivedDataPath"))
+            let buildPath = command.arguments[index + 1]
+            #expect(!buildPath.hasPrefix(command.workingDirectory.path + "/"))
+            #expect(!FileManager.default.fileExists(atPath: buildPath))
+        }
     }
 
     @Test("parallel timeouts retry alone with twice the timeout")
@@ -100,10 +128,40 @@ struct XcodeExecutionTests {
 
     @Test("failed schemas narrow and isolated builds use independent worker roots")
     func schemaFallback() throws {
-        let result = try campaign(FakeXcode(failSchema: true))
+        let fake = FakeXcode(failSchema: true)
+        let result = try campaign(fake)
         #expect(result.records.values.allSatisfy { $0.activated && $0.status == .survived })
         #expect(result.baselineCounts.count == 2)
         #expect(result.timings.isolatedBuildSeconds > 0)
+        #expect(!fake.initialBuildSawBoot)
+        #expect(fake.maximumActiveBuilds == 1)
+        let isolated = fake.builds.filter { $0.outputFile.lastPathComponent.hasPrefix("isolated-build-") }
+        #expect(!isolated.isEmpty)
+        for command in isolated {
+            let index = try #require(command.arguments.firstIndex(of: "-derivedDataPath"))
+            #expect(!command.arguments[index + 1].hasPrefix(command.workingDirectory.path + "/"))
+            #expect(!FileManager.default.fileExists(atPath: command.arguments[index + 1]))
+        }
+    }
+
+    @Test("failed original builds abort without booting simulators and remove build files")
+    func failedBuildDoesNotBoot() throws {
+        let fake = FakeXcode(failOriginalBuild: true)
+        do {
+            _ = try campaign(fake)
+            Issue.record("Expected the original build to fail")
+        } catch let error as MutationEngineError {
+            guard case .baselineBuildFailed = error else { Issue.record("Wrong error: \(error)"); return }
+            #expect(error.description.contains("tests did not start"))
+        }
+        #expect(fake.attempts.isEmpty)
+        #expect(!fake.simulators.snapshot().commands.contains { $0.first == "boot" })
+        #expect(fake.simulators.snapshot().devices.count == 1)
+        #expect(fake.builds.count == 2)
+        for command in fake.builds {
+            let index = try #require(command.arguments.firstIndex(of: "-derivedDataPath"))
+            #expect(!FileManager.default.fileExists(atPath: command.arguments[index + 1]))
+        }
     }
 
     @Test("different baseline counts abort before any mutant runs and clean both workers")

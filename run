@@ -25,7 +25,7 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("project", nargs="?", default=".", help="iOS/iPadOS package inside an Xcode project, .xcodeproj, .xcworkspace, or folder containing one (default: current folder)")
     result.add_argument("--scheme", help="Xcode scheme; prompted if missing")
-    result.add_argument("--target", "--test-target", dest="test_target", help="Xcode test target; prompted if missing")
+    result.add_argument("--target", "--test-target", dest="test_target", help="Xcode test target name (not a source file); prompted if missing")
     result.add_argument("--destination", help="Xcode destination; prompted if missing")
     result.add_argument("--parallelism", "--parallelization", type=positive_int, default=2, help="worker count (default: 2)")
     result.add_argument("--source", action="append", default=[], help="source file/folder to mutate; repeatable")
@@ -305,6 +305,12 @@ def execute_task(task: dict[str, str], args: argparse.Namespace, destination: st
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.test_target and ("/" in args.test_target or "\\" in args.test_target or args.test_target.lower().endswith(".swift")):
+        raise RuntimeError(
+            "--target must be a test target name, not a Swift file or folder. "
+            "Use --source PATH for the code file to mutate. Leave --target out to choose the test target from the menu."
+        )
+
     print(f"[run] Detecting project at {Path(args.project).expanduser()}…", flush=True)
     kind, project_path = discover_project(args.project)
     if kind == "swift-package":
@@ -344,6 +350,14 @@ def run(args: argparse.Namespace) -> int:
         if not choices_for_scheme:
             raise RuntimeError(f"No test target was found for scheme '{selected_scheme}'. Pass --target NAME.")
         test_target = ask_choice("Which test target do you want to run?", choices_for_scheme)
+    else:
+        choices_for_scheme = package[1] if package else test_targets(project_path, info, selected_scheme)
+        if choices_for_scheme and test_target not in choices_for_scheme:
+            choices = ", ".join(choices_for_scheme)
+            raise RuntimeError(
+                f"Test target '{test_target}' is not part of scheme '{selected_scheme}'. "
+                f"Choose one of: {choices}."
+            )
 
     task = {"kind": kind, "path": str(project_path), "scheme": selected_scheme,
             "target": test_target, "name": f"{selected_scheme} / {test_target}"}

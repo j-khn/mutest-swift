@@ -49,6 +49,10 @@ struct XcodeWorkerTests {
         #expect(command.arguments.contains("ARCHS=x86_64"))
         #endif
         #expect(command.arguments.contains("ONLY_ACTIVE_ARCH=YES"))
+        let jobsIndex = try #require(command.arguments.firstIndex(of: "-jobs"))
+        #expect(command.arguments[jobsIndex + 1] == "2")
+        let testCommand = try adapter.command(root: root, phase: .testWithoutBuilding, resolved: .init(identifiers: [], allTests: true), environment: [:], timeout: 30, output: root.appendingPathComponent("test.log"), xcodeContext: context)
+        #expect(!testCommand.arguments.contains("-jobs"))
 
         let explicit = NativeTestAdapter(project: project, selection: .init(), xcodebuildArguments: ["ARCHS=arm64", "ONLY_ACTIVE_ARCH=NO"])
         let explicitCommand = try explicit.command(root: root, phase: .buildForTesting, resolved: .init(identifiers: [], allTests: true), environment: [:], timeout: 30, output: root.appendingPathComponent("explicit-build.log"), xcodeContext: context)
@@ -58,6 +62,25 @@ struct XcodeWorkerTests {
 
     private var template: XcodeSimulatorTemplate {
         .init(deviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-17", runtime: "com.apple.CoreSimulator.SimRuntime.iOS-27-2", runtimeVersion: "27.2", runtimeBuild: "test-build")
+    }
+
+    @Test("dependency resolution and test builds share an external build workspace")
+    func sharedBuildWorkspace() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = try XcodeBuildWorkspace(); defer { workspace.cleanup() }
+        let project = ProjectConfiguration(kind: .xcodeProject, path: "Fixture.xcodeproj", scheme: "Fixture", testTarget: "FixtureTests", destination: "platform=iOS Simulator,id=owned")
+        let adapter = NativeTestAdapter(project: project, selection: .init(), xcodeDerivedDataPath: workspace.derivedData)
+        let selection = ResolvedTestSelection(identifiers: [], allTests: true)
+        let resolve = try adapter.command(root: root, phase: .resolveDependencies, resolved: selection, environment: [:], timeout: 30, output: root.appendingPathComponent("resolve.log"))
+        let packagesIndex = try #require(resolve.arguments.firstIndex(of: "-clonedSourcePackagesDirPath"))
+        #expect(resolve.arguments[packagesIndex + 1] == workspace.derivedData.appendingPathComponent("SourcePackages").path)
+        for phase in [TestPhase.buildForTesting, .baseline] {
+            let build = try adapter.command(root: root, phase: phase, resolved: selection, environment: [:], timeout: 30, output: root.appendingPathComponent("build.log"))
+            let index = try #require(build.arguments.firstIndex(of: "-derivedDataPath"))
+            #expect(build.arguments[index + 1] == workspace.derivedData.path)
+        }
+        #expect(!workspace.derivedData.path.hasPrefix(root.path + "/"))
+        #expect(workspace.isolatedDerivedData(worker: 1) != workspace.isolatedDerivedData(worker: 2))
     }
     private func temporaryDirectory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("Xcode workers \(UUID().uuidString)")
@@ -98,6 +121,24 @@ struct XcodeWorkerTests {
         let snapshot = fake.snapshot()
         #expect(snapshot.devices == ["user-simulator": "My Simulator"])
         #expect(!snapshot.commands.contains { ["delete", "shutdown", "terminate"].contains($0.first ?? "") && $0.dropFirst().contains("user-simulator") })
+    }
+
+    @Test("deferred simulator startup boots each worker completely before the next")
+    func deferredStartup() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let fake = FakeSimulators()
+        let pool = try XcodeSimulatorPool(template: template, count: 2, output: root, deferBoot: true, run: fake.run, teardownRun: fake.run)
+        #expect(!fake.snapshot().commands.contains { $0.first == "boot" })
+        _ = try pool.waitUntilReady()
+        let bootCommands = fake.snapshot().commands.filter { ["boot", "bootstatus"].contains($0.first ?? "") }
+        #expect(bootCommands.map { $0[0] } == ["boot", "bootstatus", "boot", "bootstatus"])
+        try #require(bootCommands.count == 4)
+        #expect(bootCommands[0][1] == bootCommands[1][1])
+        #expect(bootCommands[2][1] == bootCommands[3][1])
+        #expect(bootCommands[0][1] != bootCommands[2][1])
+        _ = try pool.waitUntilReady()
+        #expect(fake.snapshot().commands.filter { $0.first == "boot" }.count == 2)
+        #expect(pool.cleanup().isEmpty)
     }
 
     @Test("recovers an abandoned unlocked pool and keeps a live pool")

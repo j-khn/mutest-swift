@@ -65,10 +65,10 @@ For an Xcode project or workspace, the tool asks which scheme, test target, and 
 | --- | --- | --- |
 | `PROJECT` | iOS/iPadOS package folder with an enclosing Xcode project/workspace, `.xcodeproj`, `.xcworkspace`, or folder containing one; defaults to `.` | Project to test. |
 | `--scheme NAME` | Xcode scheme | Selects an Xcode scheme. Asked interactively if missing. |
-| `--target NAME` or `--test-target NAME` | Xcode test target | Selects the tests to run. Asked interactively if missing. |
+| `--target NAME` or `--test-target NAME` | Xcode test target name, such as `ShareContactsTests` | Selects the tests to run. This is not a source file. Asked interactively if missing. |
 | `--destination VALUE` | Xcode destination string | Chooses the simulator. Asked interactively if missing. |
 | `--parallelism N` or `--parallelization N` | Positive number; default `2` | Runs up to this many mutants at once. |
-| `--source PATH` | Source file or folder; repeatable | Limits where mutations are made. No value means all discovered source files. |
+| `--source PATH` | Swift source file or folder; repeatable | Limits where mutations are made. No value means all discovered source files. |
 | `--target-file PATH` or `--test-file PATH` | Test file; repeatable | Selects tests from the named file. No test selectors means all tests in the target. |
 | `--suite NAME` | Test suite name; repeatable | Selects tests in the named suite. |
 | `--target-tests NAME` or `--test NAME` | Test name; repeatable | Selects the named test. |
@@ -170,6 +170,8 @@ Mutation types include changing comparisons, Boolean values, logical and arithme
 ## What affects run time and cache reuse?
 
 - Xcode simulator runs can use up to `--parallelism` workers (default: `2`). Swift package runs use parallel workers with Swift Testing; packages that use XCTest run serially.
+- Xcode builds use at most two build jobs. The first build finishes before simulator workers boot, and workers boot one at a time. Mutant tests still run in parallel after startup.
+- Xcode build files and downloaded dependencies stay in a temporary folder outside your copied source tree, so project-wide lint plugins do not scan that build folder. The folder is removed when the run finishes or fails. Your project's lint plugins still run normally.
 - A verified test failure can end that mutant's run early. Survivors and mutants with no coverage finish the selected test scope.
 - JSON and Markdown reports include test counts and phase timings, such as build, baseline, mutant runs, and cleanup.
 - The verdict cache can reuse completed mutants on later runs when the code, tests, selectors, build settings, toolchain, and tool version still match.

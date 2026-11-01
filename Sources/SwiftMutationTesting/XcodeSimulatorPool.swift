@@ -120,13 +120,14 @@ final class XcodeSimulatorPool: @unchecked Sendable {
     private let bootLock = NSLock()
     private var bootErrors: [any Error] = []
     private var lastReadyAt: Date?
-    private let startedAt: Date
+    private let creationSeconds: TimeInterval
+    private var bootStartedAt: Date?
     private var ownership: Ownership
     private var lockFD: Int32
     private var closed = false
     private let bootTimeout: TimeInterval
 
-    init(template: XcodeSimulatorTemplate, count: Int, output: URL, registryDirectory: URL? = nil, bootTimeout: TimeInterval = 120,
+    init(template: XcodeSimulatorTemplate, count: Int, output: URL, registryDirectory: URL? = nil, bootTimeout: TimeInterval = 120, deferBoot: Bool = false,
          run: @escaping XcodeCommandRunner = { try ProcessRunner().run($0) },
          teardownRun: @escaping XcodeCommandRunner = { try ProcessRunner(ignoresCancellation: true).run($0) }) throws {
         let manager = FileManager.default
@@ -172,8 +173,17 @@ final class XcodeSimulatorPool: @unchecked Sendable {
         self.directory = directory; self.logs = logs; self.run = run; self.teardownRun = teardownRun
         self.artifactDirectory = artifactDirectory
         self.ownership = ownership; self.workers = workers; self.available = workers
-        self.lockFD = fd; self.startedAt = startedAt; self.bootTimeout = bootTimeout
-        bootQueue.maxConcurrentOperationCount = workers.count
+        self.lockFD = fd; self.creationSeconds = Date().timeIntervalSince(startedAt); self.bootTimeout = bootTimeout
+        // Booting several new devices simultaneously can saturate the host with
+        // simulator system services. Tests still run concurrently after startup.
+        bootQueue.maxConcurrentOperationCount = 1
+        if !deferBoot { startBooting() }
+    }
+
+    private func startBooting() {
+        bootLock.lock(); defer { bootLock.unlock() }
+        guard bootStartedAt == nil else { return }
+        bootStartedAt = Date()
         for worker in workers {
             bootQueue.addOperation { [weak self] in
                 guard let self else { return }
@@ -193,10 +203,11 @@ final class XcodeSimulatorPool: @unchecked Sendable {
     }
 
     func waitUntilReady() throws -> TimeInterval {
+        startBooting()
         bootQueue.waitUntilAllOperationsAreFinished()
         bootLock.lock(); defer { bootLock.unlock() }
         if let error = bootErrors.first { throw error }
-        return (lastReadyAt ?? Date()).timeIntervalSince(startedAt)
+        return creationSeconds + (lastReadyAt ?? Date()).timeIntervalSince(bootStartedAt ?? Date())
     }
 
     func acquire() -> XcodeSimulatorWorker {
