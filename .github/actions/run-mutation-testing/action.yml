@@ -104,6 +104,10 @@ inputs:
     description: Report directory relative to GITHUB_WORKSPACE
     required: false
     default: .swift-mutation-testing
+  tool-path:
+    description: Optional path to a CLI built by the build-cli action
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
@@ -137,6 +141,7 @@ runs:
         INPUT_FAIL_ON_NEW_SURVIVORS: ${{ inputs.fail-on-new-survivors }}
         INPUT_MAXIMUM_INTEGRITY_WARNINGS: ${{ inputs.maximum-integrity-warnings }}
         INPUT_OUTPUT_PATH: ${{ inputs.output-path }}
+        INPUT_TOOL_PATH: ${{ inputs.tool-path }}
       run: |
         set -euo pipefail
         engine_path="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)"
@@ -169,9 +174,15 @@ runs:
         while IFS= read -r value; do [[ -n "$value" ]] && args+=(--suite "$value"); done <<< "$INPUT_SUITE"
         while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test "$value"); done <<< "$INPUT_TEST"
         output="$GITHUB_WORKSPACE/$INPUT_OUTPUT_PATH"
-        tool_binary=""
+        tool_binary="$INPUT_TOOL_PATH"
         tool_cache_path=""
-        if [[ -n "$INPUT_CACHE_PATH" && "$INPUT_NO_CACHE" != "true" ]]; then
+        if [[ -n "$tool_binary" ]]; then
+          if [[ ! -x "$tool_binary" ]]; then
+            echo "Provided mutest-swift CLI is not executable: $tool_binary" >&2
+            exit 1
+          fi
+          "$tool_binary" version
+        elif [[ -n "$INPUT_CACHE_PATH" && "$INPUT_NO_CACHE" != "true" ]]; then
           toolchain_fingerprint="$( { xcode-select -p; swift --version; } | shasum -a 256 | awk '{print $1}')"
           package_fingerprint="$(cd "$engine_path" && { shasum -a 256 Package.swift Package.resolved; find Sources -type f -name '*.swift' -print | LC_ALL=C sort | while IFS= read -r file; do printf '%s ' "$file"; shasum -a 256 "$file" | awk '{print $1}'; done; } | shasum -a 256 | awk '{print $1}')"
           tool_cache_path="$cache_path/tool-binaries/$toolchain_fingerprint-$package_fingerprint/swift-mutation-testing"

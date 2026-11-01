@@ -1,0 +1,62 @@
+name: Build mutest-swift CLI
+description: Build the mutest-swift CLI before the mutation-testing step and expose its executable path.
+inputs:
+  cache-path:
+    description: Optional cache directory for the built CLI, relative to the workspace
+    required: false
+    default: ""
+  no-cache:
+    description: Do not read or write the CLI binary cache
+    required: false
+    default: "false"
+outputs:
+  tool-path:
+    description: Path to the built swift-mutation-testing executable
+    value: ${{ steps.build.outputs.tool-path }}
+runs:
+  using: composite
+  steps:
+    - name: Build or reuse CLI
+      id: build
+      shell: bash
+      env:
+        INPUT_CACHE_PATH: ${{ inputs.cache-path }}
+        INPUT_NO_CACHE: ${{ inputs.no-cache }}
+      run: |
+        set -euo pipefail
+        engine_path="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)"
+        cache_root="$INPUT_CACHE_PATH"
+        if [[ -n "$cache_root" && "$cache_root" != /* ]]; then
+          cache_root="$GITHUB_WORKSPACE/$cache_root"
+        fi
+
+        tool_cache_path=""
+        if [[ -n "$cache_root" && "$INPUT_NO_CACHE" != "true" ]]; then
+          toolchain_fingerprint="$( { xcode-select -p; swift --version; } | shasum -a 256 | awk '{print $1}')"
+          package_fingerprint="$(cd "$engine_path" && { shasum -a 256 Package.swift Package.resolved; find Sources -type f -name '*.swift' -print | LC_ALL=C sort | while IFS= read -r file; do printf '%s ' "$file"; shasum -a 256 "$file" | awk '{print $1}'; done; } | shasum -a 256 | awk '{print $1}')"
+          tool_cache_path="$cache_root/tool-binaries/$toolchain_fingerprint-$package_fingerprint/swift-mutation-testing"
+          if [[ -f "$tool_cache_path" ]]; then
+            chmod +x "$tool_cache_path"
+            if "$tool_cache_path" version >/dev/null 2>&1; then
+              echo "Using cached mutest-swift CLI."
+              echo "tool-path=$tool_cache_path" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+        fi
+
+        echo "Building mutest-swift CLI from source."
+        swift build --package-path "$engine_path" --product swift-mutation-testing
+        binary_directory="$(swift build --package-path "$engine_path" --show-bin-path)"
+        built_tool="$binary_directory/swift-mutation-testing"
+        tool_path="$built_tool"
+
+        if [[ -n "$tool_cache_path" ]]; then
+          mkdir -p "$(dirname "$tool_cache_path")"
+          cp "$built_tool" "$tool_cache_path"
+          chmod +x "$tool_cache_path"
+          tool_path="$tool_cache_path"
+        fi
+
+        "$tool_path" version
+        echo "tool-path=$tool_path" >> "$GITHUB_OUTPUT"

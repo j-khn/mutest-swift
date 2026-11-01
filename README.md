@@ -78,8 +78,14 @@ jobs:
           swift --version
           fingerprint="$( { xcode-select -p; xcodebuild -version; swift --version; } | shasum -a 256 | awk '{print $1}')"
           echo "MUTEST_TOOLCHAIN_FINGERPRINT=$fingerprint" >> "$GITHUB_ENV"
+      - name: Build mutest-swift CLI
+        id: mutest-swift-cli
+        uses: jamilkhan55/mutest-swift/.github/actions/build-cli@main
+        with:
+          cache-path: .mutest-swift-cache
       - uses: jamilkhan55/mutest-swift/.github/actions/run-mutation-testing@main
         with:
+          tool-path: ${{ steps.mutest-swift-cli.outputs.tool-path }}
           project-path: .
           project-kind: swift-package
           operator-tier: experimental
@@ -90,11 +96,18 @@ Run it from the Actions tab with **Run workflow**. It tests the full target and 
 
 ### 3. For an Xcode app
 
-Use the same CLI or Action, and set the Xcode project details. For the Action, replace its `uses` step with:
+Use the same CLI or Actions, and set the Xcode project details. Build the CLI before the mutation step so the mutation timing excludes compilation:
 
 ```yaml
-- uses: jamilkhan55/mutest-swift/.github/actions/run-mutation-testing@main
+- name: Build mutest-swift CLI
+  id: mutest-swift-cli
+  uses: jamilkhan55/mutest-swift/.github/actions/build-cli@main
   with:
+    cache-path: .mutest-swift-cache
+- name: Run mutation testing
+  uses: jamilkhan55/mutest-swift/.github/actions/run-mutation-testing@main
+  with:
+    tool-path: ${{ steps.mutest-swift-cli.outputs.tool-path }}
     project-path: MyApp.xcodeproj
     project-kind: xcode-project
     scheme: MyApp
