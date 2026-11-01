@@ -48,10 +48,12 @@ def main():
         cmd = [str(args.tool), "run", "--project", str(project), "--project-kind",
                "xcode-workspace" if project.suffix == ".xcworkspace" else "xcode-project",
                "--scheme", scheme, "--test-target", target, "--destination", args.destination,
-               "--parallelism", str(workers), "--source", source, "--operator-tier", "experimental",
+               "--parallelism", str(workers), "--operator-tier", "experimental",
                "--no-cache", "--no-resume", "--output", str(output),
                "--xcodebuild-arg", "ARCHS=arm64", "--xcodebuild-arg", "ONLY_ACTIVE_ARCH=YES",
                "--xcodebuild-arg", "CODE_SIGNING_ALLOWED=NO"]
+        for path in source if isinstance(source, (list, tuple)) else (source,):
+            cmd += ["--source", path]
         if operators:
             cmd += ["--operators", operators]
         return cmd + list(extra)
@@ -90,7 +92,7 @@ def main():
         assert report["execution"]["activeWorkerCount"] == min(workers, report["summary"]["generated"])
         assert report["execution"]["baselineRunCount"] >= report["execution"]["activeWorkerCount"]
         assert report["execution"]["baselineTestCount"] > 0
-        results["checks"].append({"name": name, "mutants": report["summary"]["generated"], "testsPerWorker": report["execution"]["baselineTestCount"], "seconds": report["execution"]["totalDurationSeconds"]})
+        results["checks"].append({"name": name, "mutants": report["summary"]["generated"], "sourceFiles": len(report["scope"]["sources"]), "testsPerWorker": report["execution"]["baselineTestCount"], "seconds": report["execution"]["totalDurationSeconds"]})
         return report
 
     try:
@@ -170,16 +172,22 @@ def main():
                     results["checks"].append({"name": "cancel-two-active-workers", "passed": True})
 
         app_project = args.app_root / "MutationTest.xcodeproj"
+        app_sources = [
+            "Modules/CheckoutCustomer/Sources/CheckoutCustomer/LoyaltyPointsCalculator.swift",
+            "Modules/CheckoutDomain/Sources/CheckoutDomain/CheckoutCalculator.swift",
+            "Modules/CheckoutInventory/Sources/CheckoutInventory/InventoryPolicy.swift",
+            "Modules/CheckoutShipping/Sources/CheckoutShipping/ShippingCalculator.swift",
+        ]
         reference = None
         for repetition in range(1, args.repetitions + 1):
             for workers in (1, 2):
                 report = campaign(f"app-{workers}-workers-{repetition}", app_project, "MutationTest", "MutationTestAppTests", workers,
-                                  "Modules/CheckoutInventory/Sources/CheckoutInventory/InventoryPolicy.swift")
+                                  app_sources)
                 if reference is None:
                     reference = report
                 assert verdicts(reference) == verdicts(report), "App serial/parallel verdict mismatch"
                 assert reference["scope"] == report["scope"] and reference["summary"] == report["summary"]
-                results["benchmarks"].append({"workers": workers, "repetition": repetition, "seconds": report["execution"]["totalDurationSeconds"], "mutantSeconds": report["timings"]["mutantRunSeconds"], "mutants": report["summary"]["generated"], "testsPerWorker": report["execution"]["baselineTestCount"]})
+                results["benchmarks"].append({"workers": workers, "repetition": repetition, "seconds": report["execution"]["totalDurationSeconds"], "mutantSeconds": report["timings"]["mutantRunSeconds"], "mutants": report["summary"]["generated"], "sourceFiles": len(report["scope"]["sources"]), "testsPerWorker": report["execution"]["baselineTestCount"]})
         if results["benchmarks"]:
             medians = {workers: statistics.median(r["seconds"] for r in results["benchmarks"] if r["workers"] == workers) for workers in (1, 2)}
             results["medianSeconds"] = medians
@@ -192,7 +200,7 @@ def main():
         (args.output / "validation.json").write_text(json.dumps(results, indent=2))
         lines = ["# Xcode worker validation", "", f"Checks completed: {len(results['checks'])}."]
         for check in results["checks"]:
-            lines.append(f"- {check['name']}: passed" + (f"; {check['mutants']} mutants, {check['testsPerWorker']} baseline tests per worker, {check['seconds']:.1f}s" if "mutants" in check else ""))
+            lines.append(f"- {check['name']}: passed" + (f"; {check['mutants']} mutants across {check['sourceFiles']} source files, {check['testsPerWorker']} baseline tests per worker, {check['seconds']:.1f}s" if "mutants" in check else ""))
         if "medianSeconds" in results:
             lines += ["", f"Median: 1 worker {results['medianSeconds'][1]:.1f}s; 2 workers {results['medianSeconds'][2]:.1f}s.", f"Speedup: {results['speedup']:.2f}×. Verdicts and test scope matched."]
         if results["error"]:

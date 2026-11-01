@@ -164,21 +164,20 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         let started = Date()
         for worker in pool.workers { try snapshot(worker: worker, derivedData: derivedData) }
         let before = state.snapshot().baselineCounts.count
-        let queue = OperationQueue()
-        queue.maxConcurrentOperationCount = pool.workers.count
         for worker in pool.workers {
-            queue.addOperation { [self] in
-                do {
-                    let label = "baseline-worker-\(worker.number)-\(UUID().uuidString)"
-                    let result = try runTests(worker: worker, mutantID: nil, timeout: TimeInterval(configuration.timeouts.baselineSeconds), label: label)
-                    guard !result.timedOut, result.exitCode == 0 else { throw MutationEngineError.baselineFailed(log: result.outputFile, timedOut: result.timedOut) }
-                    guard let count = TestExecutionCount.parse(result.output), count > 0 else { throw MutationEngineError.baselineRanNoTests(log: result.outputFile) }
-                    state.baseline(count)
-                    mutationLog("Worker \(worker.number) baseline passed: \(count) tests.")
-                } catch { state.error(error) }
+            if ProcessRunner.cancellationRequested { throw ProcessRunnerError.cancelled }
+            let label = "baseline-worker-\(worker.number)-\(UUID().uuidString)"
+            let result = try runTests(worker: worker, mutantID: nil,
+                timeout: TimeInterval(configuration.timeouts.baselineSeconds), label: label)
+            guard !result.timedOut, result.exitCode == 0 else {
+                throw MutationEngineError.baselineFailed(log: result.outputFile, timedOut: result.timedOut)
             }
+            guard let count = TestExecutionCount.parse(result.output), count > 0 else {
+                throw MutationEngineError.baselineRanNoTests(log: result.outputFile)
+            }
+            state.baseline(count)
+            mutationLog("Worker \(worker.number) baseline passed: \(count) tests.")
         }
-        queue.waitUntilAllOperationsAreFinished()
         try checkErrors()
         let counts = state.snapshot().baselineCounts
         guard counts.count == before + pool.workers.count, Set(counts).count == 1 else {

@@ -7,7 +7,9 @@ private final class FakeXcode: @unchecked Sendable {
     let simulators = FakeSimulators()
     private let lock = NSLock()
     private var active = 0
+    private var activeBaselines = 0
     private(set) var maximumActive = 0
+    private(set) var maximumActiveBaselines = 0
     private(set) var attempts: [(String, String, TimeInterval)] = []
     let failSchema: Bool
     let timeoutFirstAttempt: Bool
@@ -42,6 +44,9 @@ private final class FakeXcode: @unchecked Sendable {
                 output = "SWIFT_MUTATION_ACTIVATED:\(id)\nExecuted 2 tests\n"
                 timeout = timeoutFirstAttempt && command.timeout == 10
             } else {
+                lock.lock(); activeBaselines += 1; maximumActiveBaselines = max(maximumActiveBaselines, activeBaselines); lock.unlock()
+                Thread.sleep(forTimeInterval: 0.05)
+                lock.lock(); activeBaselines -= 1; lock.unlock()
                 output = "Executed \(mismatchBaseline && file.path.contains("worker-2") ? 3 : 2) tests\n"
             }
         }
@@ -79,6 +84,7 @@ struct XcodeExecutionTests {
         #expect(serialFake.maximumActive == 1 && parallelFake.maximumActive == 2)
         #expect(Set(parallelFake.attempts.map { $0.1 }).count == 2)
         #expect(parallel.baselineCounts == [2, 2])
+        #expect(parallelFake.maximumActiveBaselines == 1)
         #expect(parallel.mutantTestRunCount == parallel.records.count)
         #expect(parallelFake.simulators.snapshot().devices.count == 1)
     }
