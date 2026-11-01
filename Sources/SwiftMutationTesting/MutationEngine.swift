@@ -1,5 +1,4 @@
 import Foundation
-import MutationTestingSpec
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -756,9 +755,6 @@ public struct MutationEngine: Sendable {
 
     private func validate(configuration: RunConfiguration, root: URL, projectURL: URL) throws {
         guard FileManager.default.fileExists(atPath: root.path) else { throw MutationEngineError.invalidProject("Project path does not exist: \(root.path)") }
-        guard configuration.specVersion.split(separator: ".").first == "1" else {
-            throw ContractError.invalidConfiguration("This engine supports mutation-testing-spec 1.x; received '\(configuration.specVersion)'.")
-        }
         guard configuration.parallelism > 0 else { throw ContractError.invalidConfiguration("parallelism must be at least one") }
         let validOutputFormats: Set<String> = ["console", "json", "markdown"]
         guard !configuration.output.formats.isEmpty, Set(configuration.output.formats).isSubset(of: validOutputFormats) else {
@@ -960,7 +956,7 @@ public struct MutationEngine: Sendable {
             content.append(0)
             content.append(contentsOf: (environment[key] ?? "").utf8)
         }
-        content.append(contentsOf: "\u{0}0.3.0-xcode-workers-v2\u{0}\(runtimeFingerprint)\u{0}swift-mutation-testing-spec-1.0.0".utf8)
+        content.append(contentsOf: "\u{0}0.3.0-xcode-workers-v2\u{0}\(runtimeFingerprint)\u{0}mutest-swift-cache-v3".utf8)
         return SHA256Digest.hash(content)
     }
 

@@ -1,7 +1,6 @@
 import Foundation
 import Testing
 @testable import SwiftMutationTesting
-import MutationTestingSpec
 
 @Suite("Report output")
 struct ReportWriterTests {

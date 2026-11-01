@@ -32,8 +32,6 @@ Mutation testing is not a way to write code. You do not write special code for i
 
 `mutest-swift` is a mutation-testing tool for Swift packages and Xcode projects or workspaces. It temporarily changes your source code and runs your tests; your original files stay unchanged.
 
-[`mutest-core`](https://github.com/jamilkhan55/mutest-core) defines the shared mutation-testing rules and report contract. `mutest-swift` implements them for Swift.
-
 ## Quick Start
 
 ### 1. Run locally

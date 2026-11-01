@@ -1,5 +1,4 @@
 import Foundation
-import MutationTestingSpec
 
 private final class XcodeExecutionState: @unchecked Sendable {
     private let lock = NSLock()

@@ -1,6 +1,5 @@
 import Foundation
 import Testing
-import MutationTestingSpec
 @testable import SwiftMutationTesting
 
 @Suite("Source discovery")

@@ -1,7 +1,6 @@
 import Foundation
 import Testing
 @testable import SwiftMutationTesting
-import MutationTestingSpec
 
 @Suite("Swift mutation generation")
 struct SourceMutatorTests {

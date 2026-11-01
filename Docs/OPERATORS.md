@@ -1,6 +1,6 @@
 # Swift mutation operators
 
-The operator IDs are defined by the shared spec repository's `operators/catalog.json`. This file documents this Swift implementation's current syntax coverage and campaign policy. Tiers belong to this implementation and do not transfer to another language engine.
+The operator IDs are defined by the `MutationOperator` type in this repository. This file documents the current Swift syntax coverage and campaign policy.
 
 ## Syntax coverage
 
@@ -20,10 +20,10 @@ Overlapping source spans are not combined into one schema; they are built and te
 
 All seven operators remain **experimental**. Automated tests exercise syntax and runner behavior; they are not evidence for tier promotion.
 
-Promotion requires a repeatable campaign over at least three real Swift packages, with at least ten generated mutants per operator in each package. Record generated, unbuildable, killed, survived, no-coverage, and timed-out counts. Review surviving mutants to estimate the equivalent-survivor rate. Use the median kill rate across packages and the thresholds in the shared spec:
+Promotion requires a repeatable campaign over at least three real Swift packages, with at least ten generated mutants per operator in each package. Record generated, unbuildable, killed, survived, no-coverage, and timed-out counts. Review surviving mutants to estimate the equivalent-survivor rate. Use the median kill rate across packages and these thresholds:
 
 - `conservative`: median kill rate at least 70%, unviable rate at most 5%, reviewed equivalent-survivor rate at most 10%.
 - `default`: median kill rate at least 40%, unviable rate at most 15%, reviewed equivalent-survivor rate at most 25%.
 - Operators that do not meet the default threshold or lack enough campaign data stay `experimental`.
 
-Each engine release should publish its package set, operator counts, reviewed equivalence decisions, and per-operator tier changes. Tier claims are versioned per implementation.
+Each campaign report should include its package set, operator counts, reviewed equivalence decisions, and per-operator tier results.

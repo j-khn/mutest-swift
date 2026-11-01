@@ -135,7 +135,6 @@ public struct OutputConfiguration: Codable, Sendable {
 }
 
 public struct RunConfiguration: Codable, Sendable {
-    public var specVersion: String
     public var project: ProjectConfiguration
     public var source: [String]
     public var tests: TestSelection
@@ -149,17 +148,16 @@ public struct RunConfiguration: Codable, Sendable {
     public var output: OutputConfiguration
     public var qualityGate: QualityGate
 
-    public init(specVersion: String = "1.0.0", project: ProjectConfiguration = .init(), source: [String] = [], tests: TestSelection = .init(), operators: [MutationOperator] = MutationOperator.allCases, operatorTier: String = "experimental", timeouts: Timeouts = .init(), parallelism: Int = 2, cache: CacheConfiguration = .init(), resume: Bool = true, suppression: SuppressionConfiguration = .init(), output: OutputConfiguration = .init(), qualityGate: QualityGate = .init()) {
-        self.specVersion = specVersion; self.project = project; self.source = source; self.tests = tests
+    public init(project: ProjectConfiguration = .init(), source: [String] = [], tests: TestSelection = .init(), operators: [MutationOperator] = MutationOperator.allCases, operatorTier: String = "experimental", timeouts: Timeouts = .init(), parallelism: Int = 2, cache: CacheConfiguration = .init(), resume: Bool = true, suppression: SuppressionConfiguration = .init(), output: OutputConfiguration = .init(), qualityGate: QualityGate = .init()) {
+        self.project = project; self.source = source; self.tests = tests
         self.operators = operators; self.operatorTier = operatorTier; self.timeouts = timeouts
         self.parallelism = parallelism; self.cache = cache; self.resume = resume
         self.suppression = suppression; self.output = output; self.qualityGate = qualityGate
     }
 
-    enum CodingKeys: String, CodingKey { case specVersion, project, source, tests, operators, operatorTier, timeouts, parallelism, cache, resume, suppression, output, qualityGate }
+    enum CodingKeys: String, CodingKey { case project, source, tests, operators, operatorTier, timeouts, parallelism, cache, resume, suppression, output, qualityGate }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        specVersion = try values.decodeIfPresent(String.self, forKey: .specVersion) ?? "1.0.0"
         project = try values.decode(ProjectConfiguration.self, forKey: .project)
         source = try values.decodeIfPresent([String].self, forKey: .source) ?? []
         tests = try values.decodeIfPresent(TestSelection.self, forKey: .tests) ?? .init()
@@ -268,7 +266,6 @@ public struct MutationTimings: Codable, Sendable {
 
 public struct MutationReport: Codable, Sendable {
     public var schemaVersion: String = "1.0.0"
-    public var specVersion: String = "1.0.0"
     public var runId: String
     public var engine: EngineIdentity
     public var scope: Scope

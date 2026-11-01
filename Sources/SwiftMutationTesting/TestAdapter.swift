@@ -1,7 +1,6 @@
 import Foundation
 import SwiftParser
 import SwiftSyntax
-import MutationTestingSpec
 
 public struct ResolvedTestSelection: Sendable {
     public var identifiers: [String]

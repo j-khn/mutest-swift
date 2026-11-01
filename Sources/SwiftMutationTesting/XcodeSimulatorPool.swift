@@ -1,5 +1,4 @@
 import Foundation
-import MutationTestingSpec
 #if canImport(Darwin)
 import Darwin
 #else

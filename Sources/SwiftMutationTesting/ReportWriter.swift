@@ -1,5 +1,4 @@
 import Foundation
-import MutationTestingSpec
 
 public struct MutationTestCaseDetails: Codable, Hashable, Sendable {
     public var identifier: String
@@ -71,7 +70,7 @@ public enum MutationReportWriter {
         output += "- **Detected:** \(report.summary.detected) · **Undetected:** \(report.summary.undetected)\n"
         output += "- **Killed:** \(report.summary.killed) · **Survived:** \(report.summary.survived) · **No coverage:** \(report.summary.noCoverage) · **Timeout:** \(report.summary.timedOut)\n"
         output += "- **Unbuildable:** \(report.summary.unbuildable) · **Suppressed:** \(report.summary.suppressed)\n"
-        output += "- **Run:** `\(report.runId)` · **Spec:** \(report.specVersion) · **Engine:** \(report.engine.version)\n\n"
+        output += "- **Run:** `\(report.runId)` · **Engine:** \(report.engine.version)\n\n"
         if let runDetails {
             output += "## Run summary\n\n"
             output += "- **Source files selected:** \(report.scope.sources.count)\n"

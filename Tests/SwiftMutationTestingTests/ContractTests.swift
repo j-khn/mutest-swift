@@ -1,15 +1,13 @@
 import Foundation
 import Testing
 @testable import SwiftMutationTesting
-import MutationTestingSpec
 
-@Suite("Shared mutation contract")
+@Suite("Mutation contract")
 struct ContractTests {
     @Test("decodes shared configuration defaults and optional cache/report controls")
     func configurationDecoding() throws {
         let data = Data("""
         {
-          "specVersion": "1.0.0",
           "project": {"kind": "swiftPackage", "path": "."},
           "cache": {"enabled": false},
           "suppression": {"enabled": true, "requireReason": true},

@@ -1,7 +1,6 @@
 import Foundation
 import SwiftParser
 import SwiftSyntax
-import MutationTestingSpec
 
 public struct SourceSpan: Codable, Sendable, Hashable {
     public var start: Int
