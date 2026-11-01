@@ -185,6 +185,14 @@ enum PackageDependencyResolver {
         let path = prefix.first == "/" ? "/" + prefix.dropFirst().joined(separator: "/") : prefix.joined(separator: "/")
         return URL(fileURLWithPath: path.isEmpty ? "/" : path, isDirectory: true).standardizedFileURL
     }
+
+    static func relativePath(_ url: URL, to root: URL) -> String {
+        let rootPath = root.standardizedFileURL.path
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        let path = url.standardizedFileURL.path
+        if path == rootPath { return "" }
+        return path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : path
+    }
 }
 
 private final class WorkspaceFileReferenceParser: NSObject, XMLParserDelegate {
