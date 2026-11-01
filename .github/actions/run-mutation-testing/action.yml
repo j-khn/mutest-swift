@@ -1,5 +1,5 @@
 name: Run Swift mutation testing
-description: Run the Swift mutation CLI, add its Markdown report to the job summary, and upload reports and logs.
+description: Run the Swift mutation CLI, add its Markdown report to the job summary, and upload compact reports.
 inputs:
   project-path:
     description: Swift package root or .xcodeproj/.xcworkspace path
@@ -204,12 +204,36 @@ runs:
         if [[ -f "$REPORT_PATH" ]]; then
           cat "$REPORT_PATH" >> "$GITHUB_STEP_SUMMARY"
         else
-          echo "Mutation report was not produced. Check the baseline/build log in the uploaded artifact." >> "$GITHUB_STEP_SUMMARY"
+          echo "Mutation report was not produced. Check the earlier action logs for the failure." >> "$GITHUB_STEP_SUMMARY"
         fi
-    - name: Upload mutation report and logs
+    - name: Upload mutation reports
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: swift-mutation-testing-report
-        path: ${{ github.workspace }}/${{ inputs.output-path }}
+        path: |
+          ${{ github.workspace }}/${{ inputs.output-path }}/report.md
+          ${{ github.workspace }}/${{ inputs.output-path }}/report.json
+          ${{ github.workspace }}/${{ inputs.output-path }}/stryker.json
         if-no-files-found: warn
+    - name: Remove temporary mutation data
+      if: always()
+      shell: bash
+      env:
+        OUTPUT_PATH: ${{ inputs.output-path }}
+      run: |
+        set -euo pipefail
+        workspace_root="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
+        output_path="$GITHUB_WORKSPACE/$OUTPUT_PATH"
+        [[ -d "$output_path" ]] || exit 0
+        output_root="$(cd "$output_path" && pwd -P)"
+        if [[ "$output_root" == "$workspace_root" || "$output_root" != "$workspace_root/"* ]]; then
+          echo "Skipping temporary-data cleanup because the report directory is not a workspace subdirectory."
+          exit 0
+        fi
+        for name in logs results workers sandboxes; do
+          if [[ -d "$output_root/$name" ]]; then
+            rm -rf -- "$output_root/$name"
+          fi
+        done
+        echo "Removed temporary logs, Xcode result bundles, workers, and sandboxes."

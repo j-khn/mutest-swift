@@ -10,15 +10,19 @@ public struct MutationRunSummaryDetails: Codable, Sendable {
     public var activeWorkerCount: Int
     public var baselineRunCount: Int
     public var baselineTestExecutionCount: Int?
+    public var mutantTestCaseExecutionCount: Int?
+    public var mutantTestRunCountWithoutReportedCaseCount: Int
     public var simulatorSetupSeconds: Double
 
-    public init(testTarget: String? = nil, baselineTestCount: Int? = nil, mutantTestRunCount: Int = 0, totalDurationSeconds: Double = 0, requestedWorkerCount: Int = 1, activeWorkerCount: Int = 1, baselineRunCount: Int = 1, baselineTestExecutionCount: Int? = nil, simulatorSetupSeconds: Double = 0) {
+    public init(testTarget: String? = nil, baselineTestCount: Int? = nil, mutantTestRunCount: Int = 0, totalDurationSeconds: Double = 0, requestedWorkerCount: Int = 1, activeWorkerCount: Int = 1, baselineRunCount: Int = 1, baselineTestExecutionCount: Int? = nil, mutantTestCaseExecutionCount: Int? = nil, mutantTestRunCountWithoutReportedCaseCount: Int = 0, simulatorSetupSeconds: Double = 0) {
         self.testTarget = testTarget
         self.baselineTestCount = baselineTestCount
         self.mutantTestRunCount = mutantTestRunCount
         self.totalDurationSeconds = totalDurationSeconds
         self.requestedWorkerCount = requestedWorkerCount; self.activeWorkerCount = activeWorkerCount
         self.baselineRunCount = baselineRunCount; self.baselineTestExecutionCount = baselineTestExecutionCount
+        self.mutantTestCaseExecutionCount = mutantTestCaseExecutionCount
+        self.mutantTestRunCountWithoutReportedCaseCount = mutantTestRunCountWithoutReportedCaseCount
         self.simulatorSetupSeconds = simulatorSetupSeconds
     }
 }
@@ -75,6 +79,15 @@ public enum MutationReportWriter {
             output += "- **Baseline runs:** \(runDetails.baselineRunCount)"
             if let count = runDetails.baselineTestExecutionCount { output += " (\(count) reported tests across all baseline runs)" }
             output += "\n"
+            if let count = runDetails.mutantTestCaseExecutionCount {
+                output += "- **Mutant test cases reported:** \(count)\n"
+                if let baselineCount = runDetails.baselineTestExecutionCount {
+                    output += "- **Total reported test executions:** \(baselineCount + count)\n"
+                }
+            }
+            if runDetails.mutantTestRunCountWithoutReportedCaseCount > 0 {
+                output += "- **Mutant runs without a reported test count:** \(runDetails.mutantTestRunCountWithoutReportedCaseCount)\n"
+            }
             output += "- **Workers:** \(runDetails.activeWorkerCount) active / \(runDetails.requestedWorkerCount) requested\n"
             output += String(format: "- **Simulator setup:** %.2fs\n", runDetails.simulatorSetupSeconds)
             output += "- **Test selection:** \(scopeDescription)\n"

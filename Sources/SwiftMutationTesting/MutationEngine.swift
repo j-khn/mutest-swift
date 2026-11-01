@@ -726,6 +726,8 @@ public struct MutationEngine: Sendable {
             activeWorkerCount: xcodeExecution?.workerCount ?? executionConcurrency(root: root, projectKind: configuration.project.kind, requested: configuration.parallelism, candidateCount: remaining.count),
             baselineRunCount: xcodeExecution?.baselineCounts.count ?? 1,
             baselineTestExecutionCount: xcodeExecution?.baselineCounts.reduce(0, +) ?? runMetricsSnapshot.baselineTestCount,
+            mutantTestCaseExecutionCount: xcodeExecution?.mutantTestCaseExecutionCount,
+            mutantTestRunCountWithoutReportedCaseCount: xcodeExecution?.mutantTestRunCountWithoutReportedCaseCount ?? 0,
             simulatorSetupSeconds: xcodeExecution?.simulatorSetupSeconds ?? 0
         )
         try MutationReportWriter.write(report, to: output, sourceContents: sourceContents, formats: Set(configuration.output.formats), runDetails: runDetails)

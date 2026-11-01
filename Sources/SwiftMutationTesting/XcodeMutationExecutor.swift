@@ -9,18 +9,26 @@ private final class XcodeExecutionState: @unchecked Sendable {
     private var errors: [any Error] = []
     private var baselineCounts: [Int] = []
     private var testRuns = 0
+    private var mutantTestCaseExecutionCount = 0
+    private var mutantTestRunCountWithoutReportedCaseCount = 0
     private var isolatedBuildSeconds: TimeInterval = 0
 
     func baseline(_ count: Int) { lock.lock(); baselineCounts.append(count); lock.unlock() }
-    func testRun() { lock.lock(); testRuns += 1; lock.unlock() }
+    func testRun(reportedCaseCount: Int?) {
+        lock.lock()
+        testRuns += 1
+        if let reportedCaseCount { mutantTestCaseExecutionCount += reportedCaseCount }
+        else { mutantTestRunCountWithoutReportedCaseCount += 1 }
+        lock.unlock()
+    }
     func isolatedBuild(_ seconds: TimeInterval) { lock.lock(); isolatedBuildSeconds += seconds; lock.unlock() }
     func error(_ error: any Error) { lock.lock(); errors.append(error); lock.unlock() }
     func retry(_ candidate: MutationCandidate, record: MutantRecord) { lock.lock(); retries.append(candidate); records[candidate.id] = record; lock.unlock() }
     func finish(_ record: MutantRecord, warnings: [IntegrityWarning]) { lock.lock(); records[record.id] = record; self.warnings += warnings; lock.unlock() }
     func takeRetries() -> [MutationCandidate] { lock.lock(); defer { lock.unlock() }; let result = retries; retries = []; return result }
-    func snapshot() -> (records: [String: MutantRecord], warnings: [IntegrityWarning], errors: [any Error], baselineCounts: [Int], testRuns: Int, isolatedBuildSeconds: TimeInterval) {
+    func snapshot() -> (records: [String: MutantRecord], warnings: [IntegrityWarning], errors: [any Error], baselineCounts: [Int], testRuns: Int, mutantTestCaseExecutionCount: Int, mutantTestRunCountWithoutReportedCaseCount: Int, isolatedBuildSeconds: TimeInterval) {
         lock.lock(); defer { lock.unlock() }
-        return (records, warnings, errors, baselineCounts, testRuns, isolatedBuildSeconds)
+        return (records, warnings, errors, baselineCounts, testRuns, mutantTestCaseExecutionCount, mutantTestRunCountWithoutReportedCaseCount, isolatedBuildSeconds)
     }
 }
 
@@ -30,6 +38,8 @@ struct XcodeMutationExecutionResult {
     var timings: MutationTimings
     var baselineCounts: [Int]
     var mutantTestRunCount: Int
+    var mutantTestCaseExecutionCount: Int
+    var mutantTestRunCountWithoutReportedCaseCount: Int
     var workerCount: Int
     var simulatorSetupSeconds: TimeInterval
 }
@@ -143,8 +153,13 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         let cleanupWarnings = pool.cleanup()
         cleaned = true
         timings.cleanupSeconds = Date().timeIntervalSince(cleanupStarted)
+        let baselineTestExecutionCount = completed.baselineCounts.reduce(0, +)
+        let baselineTestCount = completed.baselineCounts.first.map(String.init) ?? "unavailable"
+        mutationLog("Test counts: \(baselineTestCount) baseline tests per worker (\(baselineTestExecutionCount) baseline executions); \(completed.mutantTestCaseExecutionCount) mutant test cases reported across \(completed.testRuns) mutant test runs; \(completed.mutantTestRunCountWithoutReportedCaseCount) mutant runs did not report a case count.")
         return .init(records: completed.records, warnings: completed.warnings + cleanupWarnings, timings: timings,
                      baselineCounts: completed.baselineCounts, mutantTestRunCount: completed.testRuns,
+                     mutantTestCaseExecutionCount: completed.mutantTestCaseExecutionCount,
+                     mutantTestRunCountWithoutReportedCaseCount: completed.mutantTestRunCountWithoutReportedCaseCount,
                      workerCount: workerCount, simulatorSetupSeconds: simulatorSetupSeconds)
     }
 
@@ -283,8 +298,9 @@ final class XcodeMutationExecutor: @unchecked Sendable {
             resolved: selection, environment: [:], timeout: timeout, output: log(label),
             stopOnActivatedTestFailure: mutantID != nil, activationID: mutantID,
             xcodeContext: .init(destination: worker.destination, derivedDataPath: worker.directory.appendingPathComponent("DerivedData"), testRunFile: manifest, resultBundlePath: bundle))
-        if mutantID != nil { state.testRun() }
-        return try commandRunner(command)
+        let result = try commandRunner(command)
+        if mutantID != nil { state.testRun(reportedCaseCount: TestExecutionCount.parse(result.output)) }
+        return result
     }
 
     private func finish(_ candidate: MutationCandidate, record: MutantRecord, warnings: [IntegrityWarning]) throws {
