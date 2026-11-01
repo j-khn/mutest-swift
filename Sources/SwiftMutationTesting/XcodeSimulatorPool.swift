@@ -135,7 +135,7 @@ final class XcodeSimulatorPool: @unchecked Sendable {
         let runID = UUID().uuidString
         let directory = parent.appendingPathComponent(runID)
         try manager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let fd = open(directory.appendingPathComponent("owner.lock").path, O_CREAT | O_RDWR, mode_t(0o600))
+        let fd = open(directory.appendingPathComponent("owner.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, mode_t(0o600))
         guard fd >= 0, flock(fd, LOCK_EX | LOCK_NB) == 0 else {
             if fd >= 0 { _ = close(fd) }
             throw MutationEngineError.invalidProject("Cannot lock simulator ownership directory: \(directory.path)")
@@ -213,7 +213,11 @@ final class XcodeSimulatorPool: @unchecked Sendable {
             _ = try Self.execute(["terminate", worker.simulatorID, host], logs: logs, timeout: 15, run: teardownRun)
         }
         let probe = try Self.execute(["spawn", worker.simulatorID, "launchctl", "list"], logs: logs, timeout: 15, run: teardownRun)
-        if probe.exitCode != 0 || probe.timedOut || hostBundleIDs.contains(where: { probe.output.contains($0) }) { try reset(worker) }
+        let runningHosts = probe.output.split(whereSeparator: \.isNewline).contains { line in
+            guard let pid = line.split(whereSeparator: \.isWhitespace).first.flatMap({ Int($0) }), pid > 0 else { return false }
+            return hostBundleIDs.contains { line.contains($0) }
+        }
+        if probe.exitCode != 0 || probe.timedOut || runningHosts { try reset(worker) }
     }
 
     func cleanup() -> [IntegrityWarning] {
@@ -270,7 +274,7 @@ final class XcodeSimulatorPool: @unchecked Sendable {
         for directory in try FileManager.default.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil) {
             guard let data = try? Data(contentsOf: directory.appendingPathComponent("ownership.json")),
                   let ownership = try? JSONDecoder().decode(Ownership.self, from: data), directory.lastPathComponent == ownership.runID else { continue }
-            let fd = open(directory.appendingPathComponent("owner.lock").path, O_RDWR)
+            let fd = open(directory.appendingPathComponent("owner.lock").path, O_RDWR | O_CLOEXEC)
             guard fd >= 0 else { continue }
             defer { _ = close(fd) }
             guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { continue }

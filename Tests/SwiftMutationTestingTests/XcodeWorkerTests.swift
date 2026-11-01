@@ -8,6 +8,8 @@ final class FakeSimulators: @unchecked Sendable {
     private var devices: [String: String] = ["user-simulator": "My Simulator"]
     private var commands: [[String]] = []
     var failBoot = false
+    private var launchctlOutput = ""
+    func setLaunchctlOutput(_ output: String) { lock.lock(); launchctlOutput = output; lock.unlock() }
     func run(_ command: CommandSpec) throws -> CommandResult {
         lock.lock(); defer { lock.unlock() }
         let args = Array(command.arguments.dropFirst())
@@ -21,6 +23,7 @@ final class FakeSimulators: @unchecked Sendable {
             output = String(data: try JSONSerialization.data(withJSONObject: root), encoding: .utf8)!
         case "boot" where failBoot: code = 1
         case "delete": devices.removeValue(forKey: args[1])
+        case "spawn": output = launchctlOutput
         default: break
         }
         return .init(exitCode: code, timedOut: false, elapsed: 0, output: output, outputFile: command.outputFile)
@@ -102,6 +105,21 @@ struct XcodeWorkerTests {
         #expect(throws: MutationEngineError.self) { try pool.waitUntilReady() }
         #expect(pool.cleanup().isEmpty)
         #expect(fake.snapshot().devices.count == 1)
+    }
+
+    @Test("stopped test-host services do not force an unnecessary simulator reboot")
+    func testHostCleanup() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let fake = FakeSimulators()
+        let pool = try XcodeSimulatorPool(template: template, count: 1, output: root, run: fake.run, teardownRun: fake.run)
+        _ = try pool.waitUntilReady()
+        fake.setLaunchctlOutput("PID Status Label\n- 0 UIKitApplication:example.fixture\n")
+        try pool.sanitize(pool.workers[0], hostBundleIDs: ["example.fixture"])
+        #expect(fake.snapshot().commands.filter { $0.first == "boot" }.count == 1)
+        fake.setLaunchctlOutput("PID Status Label\n42 0 UIKitApplication:example.fixture\n")
+        try pool.sanitize(pool.workers[0], hostBundleIDs: ["example.fixture"])
+        #expect(fake.snapshot().commands.filter { $0.first == "boot" }.count == 2)
+        #expect(pool.cleanup().isEmpty)
     }
 
     @Test("Xcode product copies preserve test plans and isolate per-attempt mutation variables")

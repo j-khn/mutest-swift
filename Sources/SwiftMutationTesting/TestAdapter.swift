@@ -197,7 +197,9 @@ public struct NativeTestAdapter: Sendable {
                 finalArgs += ["--scratch-path", scratchPath.path]
             }
             if phase != .buildForTesting, !resolved.allTests, !resolved.identifiers.isEmpty {
-                let pattern = resolved.identifiers.map { "(?:^|[./])" + NSRegularExpression.escapedPattern(for: $0) + #"(?:\(.*\))?$"# }.joined(separator: "|")
+                // Swift Testing may append source-location components after a function's
+                // signature. Match the declaration boundary, not the end of the whole ID.
+                let pattern = resolved.identifiers.map { "(?:^|[./])" + NSRegularExpression.escapedPattern(for: $0) + #"(?:\(|$)"# }.joined(separator: "|")
                 finalArgs += ["--filter", pattern]
             }
             return .init(executable: "/usr/bin/swift", arguments: finalArgs, workingDirectory: root, environment: environment, timeout: timeout, outputFile: output, stopOnActivatedTestFailure: stopOnActivatedTestFailure, activationID: activationID, activationFile: activationFile)
