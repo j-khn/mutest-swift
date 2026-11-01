@@ -32,22 +32,6 @@ Mutation testing is not a way to write code. You do not write special code for i
 
 `mutest-swift` is a mutation-testing tool for Swift packages and Xcode projects or workspaces. It temporarily changes your source code and runs your tests; your original files stay unchanged.
 
-## What does a mutation run do?
-
-The tool first runs the selected tests on the original code. If they fail, it stops. It then tries small code changes, one mutant at a time. If a test fails while a mutant is confirmed active, that mutant is killed. If tests pass, the tool finishes the selected test run to check whether the mutant survived or had no coverage.
-
-By default, it mutates all discovered source files and runs all tests in the configured test target. `--source` limits which files are changed; it does not limit tests. Use `--test-file`, `--suite`, or `--test` to select fewer tests.
-
-Mutation types include changing comparisons, Boolean values, logical and arithmetic operators, conditions, ternary branches, and standalone calls. See [Operators](Docs/OPERATORS.md) for supported Swift syntax and limits.
-
-## What affects run time and cache reuse?
-
-- Xcode simulator runs can use up to `--parallelism` workers (default: `2`). Swift package runs use parallel workers with Swift Testing; packages that use XCTest run serially.
-- A verified test failure can end that mutant's run early. Survivors and mutants with no coverage finish the selected test scope.
-- JSON and Markdown reports include test counts and phase timings, such as build, baseline, mutant runs, and cleanup.
-- The verdict cache can reuse completed mutants on later runs when the code, tests, selectors, build settings, toolchain, and tool version still match.
-- `--no-cache` disables cache reads and writes. `--no-resume` ignores earlier results but still saves new ones.
-
 ## Quick Start
 
 ### 1. Run locally
@@ -168,6 +152,22 @@ Replace `MyApp` and the simulator name with values from your project and runner.
 | `tool-path` | Executable path; blank by default | Use a previously built CLI. Usually leave blank. |
 
 </details>
+
+## What does a mutation run do?
+
+The tool first runs the selected tests on the original code. If they fail, it stops. It then tries small code changes, one mutant at a time. If a test fails while a mutant is confirmed active, that mutant is killed. If tests pass, the tool finishes the selected test run to check whether the mutant survived or had no coverage.
+
+By default, it mutates all discovered source files and runs all tests in the configured test target. `--source` limits which files are changed; it does not limit tests. Use `--test-file`, `--suite`, or `--test` to select fewer tests.
+
+Mutation types include changing comparisons, Boolean values, logical and arithmetic operators, conditions, ternary branches, and standalone calls. See [Operators](Docs/OPERATORS.md) for supported Swift syntax and limits.
+
+## What affects run time and cache reuse?
+
+- Xcode simulator runs can use up to `--parallelism` workers (default: `2`). Swift package runs use parallel workers with Swift Testing; packages that use XCTest run serially.
+- A verified test failure can end that mutant's run early. Survivors and mutants with no coverage finish the selected test scope.
+- JSON and Markdown reports include test counts and phase timings, such as build, baseline, mutant runs, and cleanup.
+- The verdict cache can reuse completed mutants on later runs when the code, tests, selectors, build settings, toolchain, and tool version still match.
+- `--no-cache` disables cache reads and writes. `--no-resume` ignores earlier results but still saves new ones.
 
 ## License
 
