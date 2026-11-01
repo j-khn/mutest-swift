@@ -28,6 +28,7 @@ private struct DiscoveredTest {
     var function: String
     var parameterLabels: [String]
     var customName: String?
+    var isTopLevel: Bool
     var xcodeFunction: String {
         function + (parameterLabels.isEmpty ? "()" : "(\(parameterLabels.map { $0 + ":" }.joined()))")
     }
@@ -93,6 +94,9 @@ public struct SwiftTestSelectorResolver: Sendable {
 
     private static func identifier(_ test: DiscoveredTest, testTarget: String?, forXcode: Bool) -> String {
         let function = forXcode ? test.xcodeFunction : test.function
+        if test.isTopLevel {
+            return forXcode && testTarget != nil ? "\(testTarget!)/\(function)" : function
+        }
         if let target = testTarget, !target.isEmpty { return "\(target)/\(test.suite)/\(function)" }
         return "\(test.suite)/\(function)"
     }
@@ -128,11 +132,11 @@ private final class TestDiscoveryVisitor: SyntaxVisitor {
         let attributes = node.attributes.description
         let isTesting = attributes.contains("Test") || function.hasPrefix("test")
         guard isTesting else { return .visitChildren }
-        let suite = suiteNames.last ?? URL(fileURLWithPath: file).deletingPathExtension().lastPathComponent
+        let suite = suiteNames.last ?? ""
         let suiteLabel = suiteLabels.last ?? nil
         let custom = Self.customTestName(attributes)
         let parameterLabels = node.signature.parameterClause.parameters.map { $0.firstName.text }
-        tests.append(.init(file: file, suite: suite, suiteLabel: suiteLabel, function: function, parameterLabels: parameterLabels, customName: custom))
+        tests.append(.init(file: file, suite: suite, suiteLabel: suiteLabel, function: function, parameterLabels: parameterLabels, customName: custom, isTopLevel: suiteNames.isEmpty))
         return .visitChildren
     }
 
@@ -193,7 +197,7 @@ public struct NativeTestAdapter: Sendable {
                 finalArgs += ["--scratch-path", scratchPath.path]
             }
             if phase != .buildForTesting, !resolved.allTests, !resolved.identifiers.isEmpty {
-                let pattern = resolved.identifiers.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
+                let pattern = resolved.identifiers.map { "(?:^|[./])" + NSRegularExpression.escapedPattern(for: $0) + #"(?:\(.*\))?$"# }.joined(separator: "|")
                 finalArgs += ["--filter", pattern]
             }
             return .init(executable: "/usr/bin/swift", arguments: finalArgs, workingDirectory: root, environment: environment, timeout: timeout, outputFile: output, stopOnActivatedTestFailure: stopOnActivatedTestFailure, activationID: activationID, activationFile: activationFile)
