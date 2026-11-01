@@ -84,7 +84,7 @@ struct XcodeExecutionTests {
         #expect(serialFake.maximumActive == 1 && parallelFake.maximumActive == 2)
         #expect(Set(parallelFake.attempts.map { $0.1 }).count == 2)
         #expect(parallel.baselineCounts == [2, 2])
-        #expect(parallelFake.maximumActiveBaselines == 1)
+        #expect(parallelFake.maximumActiveBaselines == 2)
         #expect(parallel.mutantTestRunCount == parallel.records.count)
         #expect(parallelFake.simulators.snapshot().devices.count == 1)
     }
