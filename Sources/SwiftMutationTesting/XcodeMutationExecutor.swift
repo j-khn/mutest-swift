@@ -120,7 +120,9 @@ final class XcodeMutationExecutor: @unchecked Sendable {
                     let middle = batch.count / 2
                     try narrowed(Array(batch[..<middle])); try narrowed(Array(batch[middle...])); return
                 }
-                timings.baselineSeconds += try prepareAndValidateWorkers(pool: pool, derivedData: builderData)
+                let snapshotsStarted = Date()
+                try snapshotWorkers(pool: pool, derivedData: builderData)
+                timings.sandboxCopySeconds += Date().timeIntervalSince(snapshotsStarted)
                 try executeBatch(sorted(batch), pool: pool, isolated: false)
             }
             try narrowed(sorted(schemaCandidates))
@@ -162,7 +164,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
 
     private func prepareAndValidateWorkers(pool: XcodeSimulatorPool, derivedData: URL) throws -> TimeInterval {
         let started = Date()
-        for worker in pool.workers { try snapshot(worker: worker, derivedData: derivedData) }
+        try snapshotWorkers(pool: pool, derivedData: derivedData)
         let before = state.snapshot().baselineCounts.count
         for worker in pool.workers {
             if ProcessRunner.cancellationRequested { throw ProcessRunnerError.cancelled }
@@ -184,6 +186,10 @@ final class XcodeMutationExecutor: @unchecked Sendable {
             throw MutationEngineError.invalidProject("Xcode workers ran different baseline test counts: \(counts). No mutation score was produced.")
         }
         return Date().timeIntervalSince(started)
+    }
+
+    private func snapshotWorkers(pool: XcodeSimulatorPool, derivedData: URL) throws {
+        for worker in pool.workers { try snapshot(worker: worker, derivedData: derivedData) }
     }
 
     private func executeBatch(_ candidates: [MutationCandidate], pool: XcodeSimulatorPool, isolated: Bool) throws {

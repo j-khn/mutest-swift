@@ -103,6 +103,7 @@ struct XcodeExecutionTests {
     func schemaFallback() throws {
         let result = try campaign(FakeXcode(failSchema: true))
         #expect(result.records.values.allSatisfy { $0.activated && $0.status == .survived })
+        #expect(result.baselineCounts.count == 2)
         #expect(result.timings.isolatedBuildSeconds > 0)
     }
 
