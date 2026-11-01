@@ -1,17 +1,25 @@
 import Foundation
 import MutationTestingSpec
 
-public struct MutationRunSummaryDetails: Sendable {
+public struct MutationRunSummaryDetails: Codable, Sendable {
     public var testTarget: String?
     public var baselineTestCount: Int?
     public var mutantTestRunCount: Int
     public var totalDurationSeconds: Double
+    public var requestedWorkerCount: Int
+    public var activeWorkerCount: Int
+    public var baselineRunCount: Int
+    public var baselineTestExecutionCount: Int?
+    public var simulatorSetupSeconds: Double
 
-    public init(testTarget: String? = nil, baselineTestCount: Int? = nil, mutantTestRunCount: Int = 0, totalDurationSeconds: Double = 0) {
+    public init(testTarget: String? = nil, baselineTestCount: Int? = nil, mutantTestRunCount: Int = 0, totalDurationSeconds: Double = 0, requestedWorkerCount: Int = 1, activeWorkerCount: Int = 1, baselineRunCount: Int = 1, baselineTestExecutionCount: Int? = nil, simulatorSetupSeconds: Double = 0) {
         self.testTarget = testTarget
         self.baselineTestCount = baselineTestCount
         self.mutantTestRunCount = mutantTestRunCount
         self.totalDurationSeconds = totalDurationSeconds
+        self.requestedWorkerCount = requestedWorkerCount; self.activeWorkerCount = activeWorkerCount
+        self.baselineRunCount = baselineRunCount; self.baselineTestExecutionCount = baselineTestExecutionCount
+        self.simulatorSetupSeconds = simulatorSetupSeconds
     }
 }
 
@@ -27,7 +35,9 @@ public enum MutationReportWriter {
         if formats.contains("json") {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            try encoder.encode(report).write(to: directory.appendingPathComponent("report.json"), options: .atomic)
+            var document = try JSONSerialization.jsonObject(with: encoder.encode(report)) as! [String: Any]
+            if let runDetails { document["execution"] = try JSONSerialization.jsonObject(with: encoder.encode(runDetails)) }
+            try JSONSerialization.data(withJSONObject: document, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]).write(to: directory.appendingPathComponent("report.json"), options: .atomic)
             try encoder.encode(StrykerCompatibleReport(report: report, sourceContents: sourceContents)).write(to: directory.appendingPathComponent("stryker.json"), options: .atomic)
         }
         if formats.contains("markdown") {
@@ -58,10 +68,15 @@ public enum MutationReportWriter {
                 scopeDescription = "\(report.scope.tests.count) selected test(s)"
             }
             if let count = runDetails.baselineTestCount {
-                output += "- **Baseline tests run:** \(count)\n"
+                output += "- **Baseline tests per worker:** \(count)\n"
             } else {
                 output += "- **Baseline tests run:** count unavailable\n"
             }
+            output += "- **Baseline runs:** \(runDetails.baselineRunCount)"
+            if let count = runDetails.baselineTestExecutionCount { output += " (\(count) total baseline test executions)" }
+            output += "\n"
+            output += "- **Workers:** \(runDetails.activeWorkerCount) active / \(runDetails.requestedWorkerCount) requested\n"
+            output += String(format: "- **Simulator setup:** %.2fs\n", runDetails.simulatorSetupSeconds)
             output += "- **Test selection:** \(scopeDescription)\n"
             if !report.scope.allTests, !report.scope.tests.isEmpty {
                 for test in report.scope.tests.sorted() { output += "  - `\(test)`\n" }

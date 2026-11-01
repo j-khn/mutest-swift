@@ -195,7 +195,13 @@ public struct MutationEngine: Sendable {
         let cacheDirectory = configuration.cache.path.map { URL(fileURLWithPath: $0, relativeTo: root).standardizedFileURL }
         let logs = output.appendingPathComponent("logs", isDirectory: true)
         try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        // A failed baseline or simulator setup must never publish a previous run's score.
+        for filename in ["report.json", "report.md", "stryker.json"] {
+            let previous = output.appendingPathComponent(filename)
+            if FileManager.default.fileExists(atPath: previous.path) { try FileManager.default.removeItem(at: previous) }
+        }
         var timings = MutationTimings()
+        let simulatorTemplate = configuration.project.kind == .swiftPackage ? nil : try XcodeSimulatorTemplate.load(destination: configuration.project.destination, logs: logs)
         let sandboxCopyStarted = Date()
         let sandbox = try makeSandbox(
             from: root,
@@ -258,7 +264,7 @@ public struct MutationEngine: Sendable {
         digestConfiguration.output = .init()
         let journalDirectory = cacheDirectory ?? output
         let inputHashStarted = Date()
-        let inputDigest = try digestInputs(root: root, files: sourceFiles, configuration: digestConfiguration, xcodebuildArguments: xcodebuildArguments, excluding: [output, journalDirectory])
+        let inputDigest = try digestInputs(root: root, files: sourceFiles, configuration: digestConfiguration, xcodebuildArguments: xcodebuildArguments, excluding: [output, journalDirectory], runtimeFingerprint: simulatorTemplate?.fingerprint ?? "")
         timings.inputHashSeconds = Date().timeIntervalSince(inputHashStarted)
         let journal = journalDirectory.appendingPathComponent("journal.jsonl")
         let cached = configuration.cache.enabled ? loadJournal(at: journal) : []
@@ -300,7 +306,29 @@ public struct MutationEngine: Sendable {
             return left == right ? lhs.id < rhs.id : left > right
         }
 
-        if !remaining.isEmpty {
+        var xcodeExecution: XcodeMutationExecutionResult?
+        if let simulatorTemplate {
+            let sources = Dictionary(uniqueKeysWithValues: try sourceFiles.map { file in
+                (relativePath(file, root: root), try String(contentsOf: file, encoding: .utf8))
+            })
+            let lockedJournal = configuration.cache.enabled ? LockedJournal(url: journal) : nil
+            let executor = XcodeMutationExecutor(configuration: configuration, adapter: adapter, selection: selection,
+                sandbox: sandbox, output: output, sources: sources,
+                createSandbox: { try self.makeSandbox(from: sandbox, into: output.appendingPathComponent("sandboxes/isolated-workers"), excluding: []) },
+                onVerdict: { record, warnings in
+                    try lockedJournal?.append(.init(cacheKey: inputDigest + ":" + record.id, record: record, warnings: warnings))
+                }, onCompletion: { candidate, status in progress.recordCompletion(candidate: candidate, status: status) })
+            let completed = try executor.run(template: simulatorTemplate, candidates: remaining, historicalDurations: historicalDurations)
+            xcodeExecution = completed
+            records.merge(completed.records) { _, new in new }
+            warnings += completed.warnings
+            timings.baselineSeconds += completed.timings.baselineSeconds
+            timings.schemaBuildSeconds += completed.timings.schemaBuildSeconds
+            timings.mutantRunSeconds += completed.timings.mutantRunSeconds
+            timings.isolatedBuildSeconds += completed.timings.isolatedBuildSeconds
+            timings.cleanupSeconds += completed.timings.cleanupSeconds
+            baselineValidated = true
+        } else if !remaining.isEmpty {
             let sourceByRelative = Dictionary(uniqueKeysWithValues: sourceFiles.map { (relativePath($0, root: root), $0) })
             var candidatesBySource: [String: [MutationCandidate]] = [:]
             for item in remaining { candidatesBySource[item.source, default: []].append(item) }
@@ -683,7 +711,7 @@ public struct MutationEngine: Sendable {
         auxiliarySandboxes.forEach { try? FileManager.default.removeItem(at: $0) }
         try? FileManager.default.removeItem(at: sandbox)
         sandboxRemoved = true
-        timings.cleanupSeconds = Date().timeIntervalSince(cleanupStarted)
+        timings.cleanupSeconds += Date().timeIntervalSince(cleanupStarted)
         let report = MutationReport(scope: .init(sources: selectedSources, tests: selection.identifiers, allTests: selection.allTests), mutants: orderedRecords, integrityWarnings: warnings, qualityGate: gate, timings: timings)
         let sourceContents = Dictionary(uniqueKeysWithValues: try sourceFiles.map { file in
             (relativePath(file, root: root), try String(contentsOf: file, encoding: .utf8))
@@ -691,9 +719,14 @@ public struct MutationEngine: Sendable {
         let runMetricsSnapshot = runMetrics.snapshot()
         let runDetails = MutationRunSummaryDetails(
             testTarget: configuration.project.testTarget,
-            baselineTestCount: runMetricsSnapshot.baselineTestCount,
-            mutantTestRunCount: runMetricsSnapshot.mutantTestRunCount,
-            totalDurationSeconds: Date().timeIntervalSince(runStartedAt)
+            baselineTestCount: xcodeExecution?.baselineCounts.first ?? runMetricsSnapshot.baselineTestCount,
+            mutantTestRunCount: xcodeExecution?.mutantTestRunCount ?? runMetricsSnapshot.mutantTestRunCount,
+            totalDurationSeconds: Date().timeIntervalSince(runStartedAt),
+            requestedWorkerCount: configuration.parallelism,
+            activeWorkerCount: xcodeExecution?.workerCount ?? executionConcurrency(root: root, projectKind: configuration.project.kind, requested: configuration.parallelism, candidateCount: remaining.count),
+            baselineRunCount: xcodeExecution?.baselineCounts.count ?? 1,
+            baselineTestExecutionCount: xcodeExecution?.baselineCounts.reduce(0, +) ?? runMetricsSnapshot.baselineTestCount,
+            simulatorSetupSeconds: xcodeExecution?.simulatorSetupSeconds ?? 0
         )
         try MutationReportWriter.write(report, to: output, sourceContents: sourceContents, formats: Set(configuration.output.formats), runDetails: runDetails)
         return report
@@ -824,7 +857,7 @@ public struct MutationEngine: Sendable {
         return String(filePath.dropFirst(prefix.count))
     }
 
-    private func digestInputs(root: URL, files: [URL], configuration: RunConfiguration, xcodebuildArguments: [String], excluding excludedPaths: [URL]) throws -> String {
+    private func digestInputs(root: URL, files: [URL], configuration: RunConfiguration, xcodebuildArguments: [String], excluding excludedPaths: [URL], runtimeFingerprint: String = "") throws -> String {
         var inputs: [String: URL] = [:]
         let rootPath = root.standardizedFileURL.path.hasSuffix("/") ? root.standardizedFileURL.path : root.standardizedFileURL.path + "/"
         let excludedRelativePaths = excludedPaths.compactMap { path -> String? in
@@ -873,7 +906,7 @@ public struct MutationEngine: Sendable {
             content.append(0)
             content.append(contentsOf: (environment[key] ?? "").utf8)
         }
-        content.append(contentsOf: "\u{0}0.2.0\u{0}swift-mutation-testing-spec-1.0.0".utf8)
+        content.append(contentsOf: "\u{0}0.3.0-xcode-workers-v1\u{0}\(runtimeFingerprint)\u{0}swift-mutation-testing-spec-1.0.0".utf8)
         return SHA256Digest.hash(content)
     }
 
@@ -934,14 +967,7 @@ public struct MutationEngine: Sendable {
     }
 
     private func executedTestCount(in output: String) -> Int? {
-        let pattern = #"(?:Executed|Test run with)\s+(\d+)\s+tests?"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let range = NSRange(output.startIndex..<output.endIndex, in: output)
-        let counts = regex.matches(in: output, range: range).compactMap { match -> Int? in
-            guard let capture = Range(match.range(at: 1), in: output) else { return nil }
-            return Int(output[capture])
-        }
-        return counts.max()
+        TestExecutionCount.parse(output)
     }
 
     private func loadJournal(at url: URL) -> [JournalEntry] {

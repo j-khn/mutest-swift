@@ -100,13 +100,17 @@ private final class ProcessGroupRegistry: @unchecked Sendable {
 public struct ProcessRunner: Sendable {
     public var terminationGrace: TimeInterval
     private let cancellationCheck: @Sendable () -> Bool
-    public init(terminationGrace: TimeInterval = 5) {
+    private let ignoresCancellation: Bool
+    /// Reserved for bounded teardown commands after the campaign has been cancelled.
+    public init(terminationGrace: TimeInterval = 5, ignoresCancellation: Bool = false) {
         self.terminationGrace = terminationGrace
+        self.ignoresCancellation = ignoresCancellation
         self.cancellationCheck = { ProcessGroupRegistry.shared.isCancelled() }
     }
 
     public init(terminationGrace: TimeInterval = 5, cancellationCheck: @escaping @Sendable () -> Bool) {
         self.terminationGrace = terminationGrace
+        self.ignoresCancellation = false
         self.cancellationCheck = cancellationCheck
     }
 
@@ -176,8 +180,8 @@ public struct ProcessRunner: Sendable {
             }
         }
         guard spawnStatus == 0 else { throw ProcessRunnerError.spawnFailed(spawnStatus, command.executable) }
-        ProcessGroupRegistry.shared.register(pid)
-        defer { ProcessGroupRegistry.shared.unregister(pid) }
+        if !ignoresCancellation { ProcessGroupRegistry.shared.register(pid) }
+        defer { if !ignoresCancellation { ProcessGroupRegistry.shared.unregister(pid) } }
 
         var status: Int32 = 0
         var timedOut = false
@@ -288,7 +292,7 @@ public struct ProcessRunner: Sendable {
     }
 
     private var isCancellationRequested: Bool {
-        ProcessGroupRegistry.shared.isCancelled() || cancellationCheck()
+        !ignoresCancellation && (ProcessGroupRegistry.shared.isCancelled() || cancellationCheck())
     }
 
     private func processGroupExists(_ pid: pid_t) -> Bool {

@@ -28,7 +28,7 @@ enum SwiftMutationTestingCLI {
         do {
             let arguments = try parse(Array(CommandLine.arguments.dropFirst()))
             if arguments.command == "help" || arguments.flags.contains("--help") { print(help); return }
-            if arguments.command == "version" { print("mutest-swift 0.2.0 · spec 1.0.0"); return }
+            if arguments.command == "version" { print("mutest-swift 0.3.0 · spec 1.0.0"); return }
             if arguments.command == "validate" {
                 let configuration = try makeConfiguration(arguments)
                 _ = try xcodebuildArguments(arguments, projectKind: configuration.project.kind)

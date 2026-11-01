@@ -159,6 +159,18 @@ private final class TestDiscoveryVisitor: SyntaxVisitor {
     }
 }
 
+public struct XcodeTestExecutionContext: Sendable {
+    public var destination: String
+    public var derivedDataPath: URL
+    public var testRunFile: URL?
+    public var resultBundlePath: URL?
+
+    public init(destination: String, derivedDataPath: URL, testRunFile: URL? = nil, resultBundlePath: URL? = nil) {
+        self.destination = destination; self.derivedDataPath = derivedDataPath
+        self.testRunFile = testRunFile; self.resultBundlePath = resultBundlePath
+    }
+}
+
 public struct NativeTestAdapter: Sendable {
     public var project: ProjectConfiguration
     public var selection: TestSelection
@@ -167,7 +179,7 @@ public struct NativeTestAdapter: Sendable {
         self.project = project; self.selection = selection; self.xcodebuildArguments = xcodebuildArguments
     }
 
-    public func command(root: URL, phase: TestPhase, resolved: ResolvedTestSelection, environment: [String: String], timeout: TimeInterval, output: URL, scratchPath: URL? = nil, stopOnActivatedTestFailure: Bool = false, activationID: String? = nil, activationFile: URL? = nil) throws -> CommandSpec {
+    public func command(root: URL, phase: TestPhase, resolved: ResolvedTestSelection, environment: [String: String], timeout: TimeInterval, output: URL, scratchPath: URL? = nil, stopOnActivatedTestFailure: Bool = false, activationID: String? = nil, activationFile: URL? = nil, xcodeContext: XcodeTestExecutionContext? = nil) throws -> CommandSpec {
         switch project.kind {
         case .swiftPackage:
             let args: [String]
@@ -195,12 +207,17 @@ public struct NativeTestAdapter: Sendable {
             case .baseline: action = "test"
             }
             var args = ["xcodebuild", action]
-            args += project.kind == .xcodeWorkspace ? ["-workspace", projectPath] : ["-project", projectPath]
-            args += ["-scheme", scheme]
-            if let destination = project.destination { args += ["-destination", destination] }
-            args.append("-derivedDataPath")
-            args.append(root.appendingPathComponent(".swift-mutation-testing/DerivedData").path)
-            args += xcodebuildArguments
+            if phase == .testWithoutBuilding, let manifest = xcodeContext?.testRunFile {
+                args += ["-xctestrun", manifest.path]
+            } else {
+                args += project.kind == .xcodeWorkspace ? ["-workspace", projectPath] : ["-project", projectPath]
+                args += ["-scheme", scheme]
+                args += xcodebuildArguments
+            }
+            if let destination = xcodeContext?.destination ?? project.destination { args += ["-destination", destination] }
+            args += ["-derivedDataPath", (xcodeContext?.derivedDataPath ?? root.appendingPathComponent(".swift-mutation-testing/DerivedData")).path]
+            args += ["-parallel-testing-enabled", "NO"]
+            if let bundle = xcodeContext?.resultBundlePath { args += ["-resultBundlePath", bundle.path] }
             if resolved.allTests, let testTarget = project.testTarget, !testTarget.isEmpty {
                 args.append("-only-testing:\(testTarget)")
             } else {

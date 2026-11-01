@@ -1,0 +1,42 @@
+name: Validate parallel Xcode mutation workers
+description: Exercise real simulator fixtures and compare serial/parallel app campaigns sequentially.
+inputs:
+  destination:
+    description: Installed iOS Simulator destination used as a template
+    required: true
+  repetitions:
+    description: Number of benchmark runs per worker count
+    default: "3"
+  skip-fixtures:
+    description: Run only the app benchmark
+    default: "false"
+  output-path:
+    description: Report folder relative to RUNNER_TEMP
+    default: xcode-worker-validation
+runs:
+  using: composite
+  steps:
+    - name: Build tool and run Xcode worker acceptance checks
+      shell: bash
+      env:
+        DESTINATION: ${{ inputs.destination }}
+        REPETITIONS: ${{ inputs.repetitions }}
+        SKIP_FIXTURES: ${{ inputs.skip-fixtures }}
+        OUTPUT_PATH: ${{ inputs.output-path }}
+      run: |
+        set -euo pipefail
+        engine_path="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)"
+        swift build --package-path "$engine_path" --product swift-mutation-testing
+        swift test --package-path "$engine_path" --no-parallel
+        binary_directory="$(swift build --package-path "$engine_path" --show-bin-path)"
+        args=(--tool "$binary_directory/swift-mutation-testing" --engine "$engine_path" --app-root "$GITHUB_WORKSPACE"
+          --destination "$DESTINATION" --output "$RUNNER_TEMP/$OUTPUT_PATH" --repetitions "$REPETITIONS")
+        [[ "$SKIP_FIXTURES" == "true" ]] && args+=(--skip-fixtures)
+        python3 "$engine_path/Scripts/validate-xcode-workers.py" "${args[@]}"
+    - name: Preserve validation reports and logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: xcode-worker-validation
+        path: ${{ runner.temp }}/${{ inputs.output-path }}
+        if-no-files-found: warn

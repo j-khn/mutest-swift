@@ -99,20 +99,34 @@ Use the same CLI or Action, and set the Xcode project details. For the Action, r
     project-kind: xcode-project
     scheme: MyApp
     test-target: MyAppTests
-    destination: platform=iOS Simulator,name=iPhone 17
+    destination: platform=iOS Simulator,name=iPhone 17,OS=latest
     xcodebuild-arg: |
       ARCHS=arm64
       ONLY_ACTIVE_ARCH=YES
     operator-tier: experimental
+    parallelism: "2"
 ```
 
 Replace the simulator name with one installed on your Mac. All seven operators are currently experimental.
+
+For two iOS Simulator mutation workers from the CLI:
+
+```sh
+swift run swift-mutation-testing run \
+  --project /path/to/MyApp.xcodeproj --project-kind xcode-project \
+  --scheme MyApp --test-target MyAppTests \
+  --destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+  --operator-tier experimental --parallelism 2
+```
+
+The tool creates two temporary simulators matching that destination, checks the baseline on each, and runs one mutant per worker. Each mutant uses all tests in `MyAppTests` unless you supply test selectors. Use `--parallelism 1` (or `parallelism: "1"` in the Action) for serial execution. Simulators are reused during the campaign and deleted afterward; the original simulator is used only as a template. Xcode workspaces use `--project-kind xcode-workspace`. Other destination platforms run serially and log the reason.
 
 ## Performance and cache
 
 - With no test selector, every run uses the full configured test target. `--source` limits mutation locations only.
 - A mutant run may stop after a selected test fails only after the engine verifies that mutant activated. Survivors and no-coverage mutants run the complete selected test scope.
 - The JSON report includes phase timings for sandbox copying, discovery, input hashing, baseline, schema builds, mutant runs, isolated builds, and cleanup. The Markdown report shows the same timings.
+- The run summary shows requested/active workers, simulator setup time, baseline tests per worker, baseline execution count, actual mutant test runs (including retries), generated mutants, source files, and total elapsed time. JSON stores these measurements in `execution`; mutant tests may stop after a verified kill, so their test-run count is separate from baseline test cases.
 - The optional verdict cache can resume completed mutants across GitHub Actions runs. The engine verifies source and test inputs, selectors, build settings, toolchain fingerprint, and engine version before reusing a verdict.
 - Use `no-cache: true` on the Action for a clean speed benchmark. That disables both cache reads and writes.
 

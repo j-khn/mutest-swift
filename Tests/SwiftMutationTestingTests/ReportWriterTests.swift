@@ -15,7 +15,9 @@ struct ReportWriterTests {
             mutants: [record],
             timings: .init(baselineSeconds: 2.5, schemaBuildSeconds: 3.25)
         )
-        try MutationReportWriter.write(report, to: directory, sourceContents: [record.source: "let enabled = true"])
+        try MutationReportWriter.write(report, to: directory, sourceContents: [record.source: "let enabled = true"],
+            runDetails: .init(testTarget: "FixtureTests", baselineTestCount: 50, mutantTestRunCount: 7, totalDurationSeconds: 174,
+                requestedWorkerCount: 2, activeWorkerCount: 2, baselineRunCount: 2, baselineTestExecutionCount: 100, simulatorSetupSeconds: 3.5))
         let strykerData = try Data(contentsOf: directory.appendingPathComponent("stryker.json"))
         let root = try #require(JSONSerialization.jsonObject(with: strykerData) as? [String: Any])
         let files = try #require(root["files"] as? [String: [String: Any]])
@@ -31,8 +33,17 @@ struct ReportWriterTests {
         let canonical = try #require(JSONSerialization.jsonObject(with: canonicalData) as? [String: Any])
         let timings = try #require(canonical["timings"] as? [String: Double])
         #expect(timings["baselineSeconds"] == 2.5)
+        let execution = try #require(canonical["execution"] as? [String: Any])
+        #expect(execution["activeWorkerCount"] as? Int == 2)
+        #expect(execution["mutantTestRunCount"] as? Int == 7)
+        #expect(execution["baselineTestExecutionCount"] as? Int == 100)
+        #expect(execution["totalDurationSeconds"] as? Double == 174)
         let markdown = try String(contentsOf: directory.appendingPathComponent("report.md"), encoding: .utf8)
         #expect(markdown.contains("| Schema build | 3.25 |"))
+        #expect(markdown.contains("**Baseline tests per worker:** 50"))
+        #expect(markdown.contains("**Baseline runs:** 2 (100 total baseline test executions)"))
+        #expect(markdown.contains("**Workers:** 2 active / 2 requested"))
+        #expect(markdown.contains("**Total time:** 2m 54s"))
     }
 
     @Test("respects requested report formats")

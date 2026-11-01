@@ -45,7 +45,7 @@ inputs:
     required: false
     default: experimental
   parallelism:
-    description: Mutation test workers (XCTest and Xcode simulator runs are serialized)
+    description: Mutation workers; iOS Simulator runs get separate automatically managed simulators
     required: false
     default: "2"
   cache-path:
