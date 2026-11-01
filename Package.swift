@@ -5,7 +5,6 @@ let package = Package(
     name: "SwiftMutationTesting",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "SwiftMutationTesting", targets: ["SwiftMutationTesting"]),
         .executable(name: "swift-mutation-testing", targets: ["swift-mutation-testing"])
     ],
     dependencies: [
