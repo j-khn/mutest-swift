@@ -115,6 +115,32 @@ def main():
                 legacy = campaign("fixture-project-test-file", project, "MutationFixture", "MutationFixtureTests", 2, source,
                                   ("--test-file", "Tests/CheckoutRuleTests.swift"), "logical")
                 assert legacy["execution"]["baselineTestCount"] == 2
+                isolated_fixture = Path(temporary) / "Isolated workers"
+                shutil.copytree(fixture, isolated_fixture)
+                rule = isolated_fixture / source
+                prefix, suffix = rule.read_text().rsplit("}", 1)
+                rule.write_text(prefix + 'public static func left() { print("left") }\npublic static func right() { print("right") }\n}' + suffix)
+                tests = isolated_fixture / "Tests/CheckoutRuleTests.swift"
+                tests.write_text(tests.read_text().replace("final class CheckoutRuleTests: XCTestCase {", "final class CheckoutRuleTests: XCTestCase {\nfunc testSideEffects() { CheckoutRule.left(); CheckoutRule.right() }"))
+                isolated = campaign("fixture-isolated-workers", isolated_fixture / "MutationFixture.xcodeproj", "MutationFixture", "MutationFixtureTests", 2, source, operators="removeSideEffects")
+                assert isolated["summary"]["survived"] == 2 and isolated["summary"]["generated"] == 2
+                assert all(m["activated"] for m in isolated["mutants"])
+                assert isolated["timings"]["isolatedBuildSeconds"] > 0
+
+                narrowed_fixture = Path(temporary) / "Narrowed schema"
+                shutil.copytree(fixture, narrowed_fixture)
+                rule = narrowed_fixture / source
+                rule.write_text('''public enum CheckoutRule {
+                    public static func total(cents: Int, member: Bool, couponPercent: Int) -> Int { couponPercent > 100 ? 0 : 8900 }
+                    public static func canUseExpress(weightGrams: Int, destinationCode: String) -> Bool { weightGrams > 0 && weightGrams <= 25000 && !destinationCode.isEmpty }
+                    public static func sum(_ left: Int, _ right: Int) -> Int { left + right }
+                    public static func join(_ left: String, _ right: String) -> String { left + right }
+                }''')
+                tests = narrowed_fixture / "Tests/CheckoutRuleTests.swift"
+                tests.write_text(tests.read_text().replace("final class CheckoutRuleTests: XCTestCase {", 'final class CheckoutRuleTests: XCTestCase {\nfunc testFallback() { XCTAssertEqual(CheckoutRule.sum(2, 2), 4); XCTAssertEqual(CheckoutRule.join("a", "b"), "ab") }'))
+                narrowed = campaign("fixture-schema-narrowing", narrowed_fixture / "MutationFixture.xcodeproj", "MutationFixture", "MutationFixtureTests", 2, source, operators="arithmetic")
+                assert narrowed["summary"]["unbuildable"] == 1 and narrowed["summary"]["killed"] == 1
+                assert list((args.output / "fixture-schema-narrowing/logs").glob("schema-narrowed-*.log"))
                 # Keep the test processes alive after launch so cancellation exercises two active workers.
                 tests = fixture / "Tests/CheckoutRuleSwiftTestingTests.swift"
                 tests.write_text("import Foundation\n" + tests.read_text().replace("func expressEligibility() {", 'func expressEligibility() { if ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"] != nil { Thread.sleep(forTimeInterval: 20) }').replace("func parameterizedWeight(weightGrams: Int) {", 'func parameterizedWeight(weightGrams: Int) { if ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"] != nil { Thread.sleep(forTimeInterval: 20) }'))
