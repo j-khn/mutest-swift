@@ -73,7 +73,7 @@ public enum MutationReportWriter {
                 output += "- **Baseline tests run:** count unavailable\n"
             }
             output += "- **Baseline runs:** \(runDetails.baselineRunCount)"
-            if let count = runDetails.baselineTestExecutionCount { output += " (\(count) total baseline test executions)" }
+            if let count = runDetails.baselineTestExecutionCount { output += " (\(count) reported tests across all baseline runs)" }
             output += "\n"
             output += "- **Workers:** \(runDetails.activeWorkerCount) active / \(runDetails.requestedWorkerCount) requested\n"
             output += String(format: "- **Simulator setup:** %.2fs\n", runDetails.simulatorSetupSeconds)

@@ -41,7 +41,7 @@ struct ReportWriterTests {
         let markdown = try String(contentsOf: directory.appendingPathComponent("report.md"), encoding: .utf8)
         #expect(markdown.contains("| Schema build | 3.25 |"))
         #expect(markdown.contains("**Baseline tests per worker:** 50"))
-        #expect(markdown.contains("**Baseline runs:** 2 (100 total baseline test executions)"))
+        #expect(markdown.contains("**Baseline runs:** 2 (100 reported tests across all baseline runs)"))
         #expect(markdown.contains("**Workers:** 2 active / 2 requested"))
         #expect(markdown.contains("**Total time:** 2m 54s"))
     }

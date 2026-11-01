@@ -127,6 +127,7 @@ The tool creates two temporary simulators matching that destination, checks the 
 - A mutant run may stop after a selected test fails only after the engine verifies that mutant activated. Survivors and no-coverage mutants run the complete selected test scope.
 - The JSON report includes phase timings for sandbox copying, discovery, input hashing, baseline, schema builds, mutant runs, isolated builds, and cleanup. The Markdown report shows the same timings.
 - The run summary shows requested/active workers, simulator setup time, baseline tests per worker, baseline execution count, actual mutant test runs (including retries), generated mutants, source files, and total elapsed time. JSON stores these measurements in `execution`; mutant tests may stop after a verified kill, so their test-run count is separate from baseline test cases.
+- Baseline test counts come from the native framework summaries. A parameterized Swift Testing declaration can contain multiple argument cases within one reported test.
 - The optional verdict cache can resume completed mutants across GitHub Actions runs. The engine verifies source and test inputs, selectors, build settings, toolchain fingerprint, and engine version before reusing a verdict.
 - Use `no-cache: true` on the Action for a clean speed benchmark. That disables both cache reads and writes.
 
