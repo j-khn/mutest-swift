@@ -728,6 +728,7 @@ public struct MutationEngine: Sendable {
             baselineTestExecutionCount: xcodeExecution?.baselineCounts.reduce(0, +) ?? runMetricsSnapshot.baselineTestCount,
             mutantTestCaseExecutionCount: xcodeExecution?.mutantTestCaseExecutionCount,
             mutantTestRunCountWithoutReportedCaseCount: xcodeExecution?.mutantTestRunCountWithoutReportedCaseCount ?? 0,
+            mutantTestRuns: xcodeExecution?.mutantTestRuns ?? [],
             simulatorSetupSeconds: xcodeExecution?.simulatorSetupSeconds ?? 0
         )
         try MutationReportWriter.write(report, to: output, sourceContents: sourceContents, formats: Set(configuration.output.formats), runDetails: runDetails)

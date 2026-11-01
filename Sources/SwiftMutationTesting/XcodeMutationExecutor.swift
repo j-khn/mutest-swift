@@ -11,13 +11,15 @@ private final class XcodeExecutionState: @unchecked Sendable {
     private var testRuns = 0
     private var mutantTestCaseExecutionCount = 0
     private var mutantTestRunCountWithoutReportedCaseCount = 0
+    private var mutantTestRuns: [MutantTestRunDetails] = []
     private var isolatedBuildSeconds: TimeInterval = 0
 
     func baseline(_ count: Int) { lock.lock(); baselineCounts.append(count); lock.unlock() }
-    func testRun(reportedCaseCount: Int?) {
+    func testRun(_ details: MutantTestRunDetails) {
         lock.lock()
         testRuns += 1
-        if let reportedCaseCount { mutantTestCaseExecutionCount += reportedCaseCount }
+        mutantTestRuns.append(details)
+        if let reportedCaseCount = details.reportedCaseCount { mutantTestCaseExecutionCount += reportedCaseCount }
         else { mutantTestRunCountWithoutReportedCaseCount += 1 }
         lock.unlock()
     }
@@ -26,9 +28,9 @@ private final class XcodeExecutionState: @unchecked Sendable {
     func retry(_ candidate: MutationCandidate, record: MutantRecord) { lock.lock(); retries.append(candidate); records[candidate.id] = record; lock.unlock() }
     func finish(_ record: MutantRecord, warnings: [IntegrityWarning]) { lock.lock(); records[record.id] = record; self.warnings += warnings; lock.unlock() }
     func takeRetries() -> [MutationCandidate] { lock.lock(); defer { lock.unlock() }; let result = retries; retries = []; return result }
-    func snapshot() -> (records: [String: MutantRecord], warnings: [IntegrityWarning], errors: [any Error], baselineCounts: [Int], testRuns: Int, mutantTestCaseExecutionCount: Int, mutantTestRunCountWithoutReportedCaseCount: Int, isolatedBuildSeconds: TimeInterval) {
+    func snapshot() -> (records: [String: MutantRecord], warnings: [IntegrityWarning], errors: [any Error], baselineCounts: [Int], testRuns: Int, mutantTestCaseExecutionCount: Int, mutantTestRunCountWithoutReportedCaseCount: Int, mutantTestRuns: [MutantTestRunDetails], isolatedBuildSeconds: TimeInterval) {
         lock.lock(); defer { lock.unlock() }
-        return (records, warnings, errors, baselineCounts, testRuns, mutantTestCaseExecutionCount, mutantTestRunCountWithoutReportedCaseCount, isolatedBuildSeconds)
+        return (records, warnings, errors, baselineCounts, testRuns, mutantTestCaseExecutionCount, mutantTestRunCountWithoutReportedCaseCount, mutantTestRuns, isolatedBuildSeconds)
     }
 }
 
@@ -40,6 +42,7 @@ struct XcodeMutationExecutionResult {
     var mutantTestRunCount: Int
     var mutantTestCaseExecutionCount: Int
     var mutantTestRunCountWithoutReportedCaseCount: Int
+    var mutantTestRuns: [MutantTestRunDetails]
     var workerCount: Int
     var simulatorSetupSeconds: TimeInterval
 }
@@ -160,6 +163,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
                      baselineCounts: completed.baselineCounts, mutantTestRunCount: completed.testRuns,
                      mutantTestCaseExecutionCount: completed.mutantTestCaseExecutionCount,
                      mutantTestRunCountWithoutReportedCaseCount: completed.mutantTestRunCountWithoutReportedCaseCount,
+                     mutantTestRuns: completed.mutantTestRuns,
                      workerCount: workerCount, simulatorSetupSeconds: simulatorSetupSeconds)
     }
 
@@ -267,7 +271,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
             try snapshot(worker: worker, derivedData: derivedData)
         }
         let timeout = TimeInterval(configuration.timeouts.mutantSeconds) * (retry ? configuration.timeouts.retryMultiplier : 1)
-        let result = try runTests(worker: worker, mutantID: candidate.id, timeout: timeout,
+        let result = try runTests(worker: worker, mutantID: candidate.id, source: candidate.source, timeout: timeout,
                                  label: "\(retry ? "retry-isolated" : "mutant")-\(candidate.id)")
         let activated = result.output.contains("SWIFT_MUTATION_ACTIVATED:\(candidate.id)")
         var record = candidate.record
@@ -288,7 +292,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         return (record, warnings)
     }
 
-    private func runTests(worker: XcodeSimulatorWorker, mutantID: String?, timeout: TimeInterval, label: String) throws -> CommandResult {
+    private func runTests(worker: XcodeSimulatorWorker, mutantID: String?, source: String? = nil, timeout: TimeInterval, label: String) throws -> CommandResult {
         guard let artifacts = worker.artifacts else { throw MutationEngineError.invalidProject("Worker has no test products.") }
         let environment = mutantID.map { ["SWIFT_MUTATION_ID": $0] } ?? [:]
         let manifest = try artifacts.invocationManifest(environment: environment)
@@ -299,7 +303,11 @@ final class XcodeMutationExecutor: @unchecked Sendable {
             stopOnActivatedTestFailure: mutantID != nil, activationID: mutantID,
             xcodeContext: .init(destination: worker.destination, derivedDataPath: worker.directory.appendingPathComponent("DerivedData"), testRunFile: manifest, resultBundlePath: bundle))
         let result = try commandRunner(command)
-        if mutantID != nil { state.testRun(reportedCaseCount: TestExecutionCount.parse(result.output)) }
+        if let mutantID {
+            let testCases = try XcodeTestResultReader.readCases(from: bundle, relativeTo: worker.isolatedRoot ?? sandbox)
+            state.testRun(.init(mutantId: mutantID, source: source ?? "<unknown>",
+                                reportedCaseCount: TestExecutionCount.parse(result.output), testCases: testCases))
+        }
         return result
     }
 

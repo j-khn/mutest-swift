@@ -1,6 +1,21 @@
 import Foundation
 import MutationTestingSpec
 
+public struct MutationTestCaseDetails: Codable, Hashable, Sendable {
+    public var identifier: String
+    public var name: String
+    public var testFile: String?
+    public var lineNumber: Int?
+    public var result: String?
+}
+
+public struct MutantTestRunDetails: Codable, Sendable {
+    public var mutantId: String
+    public var source: String
+    public var reportedCaseCount: Int?
+    public var testCases: [MutationTestCaseDetails]?
+}
+
 public struct MutationRunSummaryDetails: Codable, Sendable {
     public var testTarget: String?
     public var baselineTestCount: Int?
@@ -12,9 +27,10 @@ public struct MutationRunSummaryDetails: Codable, Sendable {
     public var baselineTestExecutionCount: Int?
     public var mutantTestCaseExecutionCount: Int?
     public var mutantTestRunCountWithoutReportedCaseCount: Int
+    public var mutantTestRuns: [MutantTestRunDetails]
     public var simulatorSetupSeconds: Double
 
-    public init(testTarget: String? = nil, baselineTestCount: Int? = nil, mutantTestRunCount: Int = 0, totalDurationSeconds: Double = 0, requestedWorkerCount: Int = 1, activeWorkerCount: Int = 1, baselineRunCount: Int = 1, baselineTestExecutionCount: Int? = nil, mutantTestCaseExecutionCount: Int? = nil, mutantTestRunCountWithoutReportedCaseCount: Int = 0, simulatorSetupSeconds: Double = 0) {
+    public init(testTarget: String? = nil, baselineTestCount: Int? = nil, mutantTestRunCount: Int = 0, totalDurationSeconds: Double = 0, requestedWorkerCount: Int = 1, activeWorkerCount: Int = 1, baselineRunCount: Int = 1, baselineTestExecutionCount: Int? = nil, mutantTestCaseExecutionCount: Int? = nil, mutantTestRunCountWithoutReportedCaseCount: Int = 0, mutantTestRuns: [MutantTestRunDetails] = [], simulatorSetupSeconds: Double = 0) {
         self.testTarget = testTarget
         self.baselineTestCount = baselineTestCount
         self.mutantTestRunCount = mutantTestRunCount
@@ -23,6 +39,7 @@ public struct MutationRunSummaryDetails: Codable, Sendable {
         self.baselineRunCount = baselineRunCount; self.baselineTestExecutionCount = baselineTestExecutionCount
         self.mutantTestCaseExecutionCount = mutantTestCaseExecutionCount
         self.mutantTestRunCountWithoutReportedCaseCount = mutantTestRunCountWithoutReportedCaseCount
+        self.mutantTestRuns = mutantTestRuns
         self.simulatorSetupSeconds = simulatorSetupSeconds
     }
 }
@@ -88,6 +105,7 @@ public enum MutationReportWriter {
             if runDetails.mutantTestRunCountWithoutReportedCaseCount > 0 {
                 output += "- **Mutant runs without a reported test count:** \(runDetails.mutantTestRunCountWithoutReportedCaseCount)\n"
             }
+            appendTestsByMutatedFile(report, runDetails: runDetails, to: &output)
             output += "- **Workers:** \(runDetails.activeWorkerCount) active / \(runDetails.requestedWorkerCount) requested\n"
             output += String(format: "- **Simulator setup:** %.2fs\n", runDetails.simulatorSetupSeconds)
             output += "- **Test selection:** \(scopeDescription)\n"
@@ -127,6 +145,63 @@ public enum MutationReportWriter {
             for failure in gate.failures { output += "- \(failure)\n" }
         }
         return output
+    }
+
+    private static func appendTestsByMutatedFile(_ report: MutationReport, runDetails: MutationRunSummaryDetails, to output: inout String) {
+        guard !runDetails.mutantTestRuns.isEmpty else { return }
+        let runsBySource = Dictionary(grouping: runDetails.mutantTestRuns, by: \.source)
+        output += "\n### Unit tests by mutated file\n\n"
+        output += "| Mutated file | Mutants run | Test runs | Unit test executions reported | Unique unit tests observed | Test files observed |\n"
+        output += "|---|---:|---:|---:|---:|---:|\n"
+
+        for source in report.scope.sources.sorted() {
+            let runs = runsBySource[source, default: []]
+            let mutantCount = Set(runs.map(\.mutantId)).count
+            let reportedCounts = runs.compactMap(\.reportedCaseCount)
+            let unknownCount = runs.count - reportedCounts.count
+            let testCount = reportedCounts.reduce(0, +)
+            let testCases = uniqueTestCases(in: runs)
+            let testFiles = Set(testCases.compactMap(\.testFile)).count
+            let testCountLabel = unknownCount == 0 ? String(testCount) : "\(testCount) (+\(unknownCount) unreported)"
+            output += "| `\(markdownCell(source))` | \(mutantCount) | \(runs.count) | \(testCountLabel) | \(testCases.count) | \(testFiles) |\n"
+        }
+        output += "\n"
+
+        let sourcesWithTestNames = runsBySource.keys.filter { !(runsBySource[$0] ?? []).allSatisfy { $0.testCases?.isEmpty ?? true } }.sorted()
+        guard !sourcesWithTestNames.isEmpty else { return }
+        output += "<details>\n<summary>Unit test names by mutated file</summary>\n\n"
+        for source in sourcesWithTestNames {
+            let runs = runsBySource[source, default: []]
+            output += "#### `\(markdownCell(source))`\n\n"
+            for testCase in uniqueTestCases(in: runs) {
+                let fileLocation: String
+                if let file = testCase.testFile {
+                    fileLocation = testCase.lineNumber.map { " — `\(markdownCell(file)):\($0)`" } ?? " — `\(markdownCell(file))`"
+                } else { fileLocation = "" }
+                output += "- `\(markdownCell(testCase.name))`\(fileLocation)\n"
+            }
+            if runs.contains(where: { $0.testCases == nil }) {
+                output += "- Some mutant result bundles did not include a test-name list.\n"
+            }
+            output += "\n"
+        }
+        output += "</details>\n\n"
+    }
+
+    private static func uniqueTestCases(in runs: [MutantTestRunDetails]) -> [MutationTestCaseDetails] {
+        var cases: [String: MutationTestCaseDetails] = [:]
+        for testCase in runs.flatMap({ $0.testCases ?? [] }) { cases[testCase.identifier] = testCase }
+        return cases.values.sorted {
+            if $0.testFile != $1.testFile { return ($0.testFile ?? "") < ($1.testFile ?? "") }
+            if $0.lineNumber != $1.lineNumber { return ($0.lineNumber ?? 0) < ($1.lineNumber ?? 0) }
+            return $0.name < $1.name
+        }
+    }
+
+    private static func markdownCell(_ value: String) -> String {
+        value.replacingOccurrences(of: "|", with: "\\|")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "`", with: "\\`")
     }
 
     private static func formatDuration(_ seconds: Double) -> String {
