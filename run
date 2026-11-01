@@ -20,10 +20,10 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         prog="./run",
         description="Run mutest-swift locally. Xcode settings are detected and prompted for when missing.",
-        epilog="Examples:\n  ./run /path/to/package\n  ./run /path/to/App.xcodeproj --scheme App --target AppTests --destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'\n  ./run /path/to/package --parallelism 2 --source Sources/Checkout --target-file CheckoutTests.swift --target-tests checkoutTotal",
+        epilog="Examples:\n  ./run /path/to/App.xcodeproj\n  ./run /path/to/App.xcodeproj --scheme App --target AppTests --destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'\n  ./run /path/to/App.xcodeproj --parallelism 2 --source Modules/Checkout/Sources/Checkout --target-file CheckoutTests.swift --target-tests checkoutTotal",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    result.add_argument("project", nargs="?", default=".", help="Swift package, .xcodeproj, .xcworkspace, or folder containing one (default: current folder)")
+    result.add_argument("project", nargs="?", default=".", help="iOS/iPadOS package inside an Xcode project, .xcodeproj, .xcworkspace, or folder containing one (default: current folder)")
     result.add_argument("--scheme", help="Xcode scheme; prompted if missing")
     result.add_argument("--target", "--test-target", dest="test_target", help="Xcode test target; prompted if missing")
     result.add_argument("--destination", help="Xcode destination; prompted if missing")
@@ -84,7 +84,23 @@ def discover_project(raw_path: str) -> tuple[str, Path]:
     if not path.is_dir():
         raise RuntimeError(f"Not a project folder or Xcode project: {path}")
     if (path / "Package.swift").is_file():
-        return "swift-package", path
+        # iOS/iPadOS package tests need Xcode's simulator runner. `swift test`
+        # executes on the Mac host and can fail for packages using Xcode-only APIs.
+        for parent in (path, *path.parents):
+            workspaces = sorted(parent.glob("*.xcworkspace"))
+            projects = sorted(parent.glob("*.xcodeproj"))
+            candidates = workspaces or projects
+            if candidates:
+                selected = ask_choice(
+                    "Which Xcode project or workspace do you want to run?",
+                    [str(candidate) for candidate in candidates],
+                )
+                selected_path = Path(selected)
+                return ("xcode-workspace" if selected_path.suffix == ".xcworkspace" else "xcode-project", selected_path)
+        raise RuntimeError(
+            f"No enclosing .xcodeproj or .xcworkspace found for package {path}. "
+            "iOS/iPadOS tests need to run through Xcode on a simulator; pass the containing Xcode project or workspace."
+        )
 
     candidates: list[Path] = []
     for current, dirs, _ in os.walk(path):
@@ -234,13 +250,14 @@ def simulator_destinations() -> list[tuple[str, str]]:
         match = re.search(r"iOS-(\d+)-(\d+)(?:-(\d+))?", runtime)
         version = tuple(int(part or 0) for part in match.groups()) if match else (0, 0, 0)
         for device in devices:
-            if device.get("isAvailable") is False or device.get("deviceTypeIdentifier", "").find("iPhone") < 0:
+            device_type = device.get("deviceTypeIdentifier", "")
+            if device.get("isAvailable") is False or not any(kind in device_type for kind in ("iPhone", "iPad")):
                 continue
             name = f"{device.get('name', 'iPhone')} (iOS {'.'.join(map(str, version[:2]))})"
             destination = f"platform=iOS Simulator,id={device['udid']}"
             entries.append((version, name, destination))
     if not entries:
-        raise RuntimeError("No available iPhone simulators found. Install an iOS Simulator in Xcode.")
+        raise RuntimeError("No available iPhone or iPad simulators found. Install an iOS Simulator in Xcode.")
     latest = max(entry[0] for entry in entries)
     return [(name, destination) for version, name, destination in entries if version == latest]
 
@@ -252,9 +269,10 @@ def choose_destination() -> str:
     return dict(choices)[selected]
 
 
-def common_arguments(args: argparse.Namespace, include_xcodebuild_args: bool = True) -> list[str]:
+def common_arguments(args: argparse.Namespace, include_xcodebuild_args: bool = True, default_source: str | None = None) -> list[str]:
     command = ["--parallelism", str(args.parallelism), "--operator-tier", args.operator_tier]
-    selectors = [("--source", args.source), ("--test-file", args.test_files), ("--suite", args.suite), ("--test", args.tests)]
+    source_values = args.source or ([default_source] if default_source else [])
+    selectors = [("--source", source_values), ("--test-file", args.test_files), ("--suite", args.suite), ("--test", args.tests)]
     if include_xcodebuild_args:
         selectors.append(("--xcodebuild-arg", args.xcodebuild_arg))
     for option, values in selectors:
@@ -273,7 +291,11 @@ def execute_task(task: dict[str, str], args: argparse.Namespace, destination: st
     command = ["validate" if args.validate else "run", "--project", task["path"], "--project-kind", task["kind"]]
     if task["kind"] != "swift-package":
         command += ["--scheme", task["scheme"], "--test-target", task["target"], "--destination", destination or ""]
-    command += common_arguments(args, include_xcodebuild_args=task["kind"] != "swift-package")
+    command += common_arguments(
+        args,
+        include_xcodebuild_args=task["kind"] != "swift-package",
+        default_source=task.get("source"),
+    )
     if output:
         command += ["--output", output]
     title = task.get("name", task["path"])
@@ -309,22 +331,27 @@ def run(args: argparse.Namespace) -> int:
         for target in targets:
             package_map[target] = (path, targets)
 
-    selected_scheme = args.scheme or ask_choice("Which scheme do you want to run?", schemes, default_first=True)
+    package_hint = Path(args.project).expanduser().resolve().name if (Path(args.project).expanduser().resolve() / "Package.swift").is_file() else None
+    preferred_scheme = package_hint if package_hint in schemes else None
+    selected_scheme = args.scheme or preferred_scheme or ask_choice("Which scheme do you want to run?", schemes, default_first=True)
+    # In an Xcode project context, always run the selected Xcode scheme through Xcode.
+    # A scheme can share its name with a local Swift package; routing that entry to
+    # `swift test` runs on macOS and cannot use Xcode-only plugin APIs or a simulator.
     package = package_map.get(selected_scheme)
+    test_target = args.test_target
+    if not test_target:
+        choices_for_scheme = package[1] if package else test_targets(project_path, info, selected_scheme)
+        if not choices_for_scheme:
+            raise RuntimeError(f"No test target was found for scheme '{selected_scheme}'. Pass --target NAME.")
+        test_target = ask_choice("Which test target do you want to run?", choices_for_scheme)
+
+    task = {"kind": kind, "path": str(project_path), "scheme": selected_scheme,
+            "target": test_target, "name": f"{selected_scheme} / {test_target}"}
     if package:
         package_path, _ = package
-        if args.test_target or args.destination:
-            print("Note: --target and --destination are ignored for a Swift package test scheme.")
-        tasks = [{"kind": "swift-package", "path": str(package_path), "name": package_path.name}]
-    else:
-        test_target = args.test_target
-        if not test_target:
-            choices_for_scheme = test_targets(project_path, info, selected_scheme)
-            if not choices_for_scheme:
-                raise RuntimeError(f"No test target was found for scheme '{selected_scheme}'. Pass --target NAME.")
-            test_target = ask_choice("Which test target do you want to run?", choices_for_scheme)
-        tasks = [{"kind": kind, "path": str(project_path), "scheme": selected_scheme,
-                  "target": test_target, "name": f"{selected_scheme} / {test_target}"}]
+        task["source"] = str(package_path.relative_to(project_path.parent))
+        print(f"[run] Running package {package_path.name} through Xcode on the selected simulator.", flush=True)
+    tasks = [task]
 
     has_xcode_tasks = any(task["kind"] != "swift-package" for task in tasks)
     destination = None
@@ -336,7 +363,8 @@ def run(args: argparse.Namespace) -> int:
     task = tasks[0]
     output = args.output
     print("Test scope: full configured target" if not (args.test_files or args.suite or args.tests) else "Test scope: selected tests", flush=True)
-    print("Mutation scope: all discovered source files" if not args.source else f"Mutation scope: {', '.join(args.source)}", flush=True)
+    source_scope = args.source or ([task["source"]] if task.get("source") else [])
+    print("Mutation scope: all discovered source files" if not source_scope else f"Mutation scope: {', '.join(source_scope)}", flush=True)
     return execute_task(task, args, destination, output)
 
 

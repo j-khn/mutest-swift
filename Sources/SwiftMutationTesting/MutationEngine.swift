@@ -285,9 +285,25 @@ public struct MutationEngine: Sendable {
         func validateBaseline(phase: TestPhase) throws {
             let baselineStarted = Date()
             mutationLog("Running baseline tests…")
-            let baseline = try runner.run(adapter.command(root: sandbox, phase: phase, resolved: selection, environment: [:], timeout: TimeInterval(configuration.timeouts.baselineSeconds), output: baselineLog))
+            let command = try adapter.command(root: sandbox, phase: phase, resolved: selection, environment: [:], timeout: TimeInterval(configuration.timeouts.baselineSeconds), output: baselineLog)
+            let baseline = try runner.run(command)
             timings.baselineSeconds += Date().timeIntervalSince(baselineStarted)
-            guard !baseline.timedOut && baseline.exitCode == 0 else { throw MutationEngineError.baselineFailed(log: baselineLog, timedOut: baseline.timedOut) }
+            guard !baseline.timedOut && baseline.exitCode == 0 else {
+                appendBaselineFailureDetails(command: command, result: baseline, originalProject: root, to: baselineLog)
+                if !baseline.timedOut,
+                   configuration.project.kind == .swiftPackage,
+                   baseline.output.trimmingCharacters(in: .whitespacesAndNewlines) == "error: fatalError" {
+                    appendVerboseSwiftPMBuildDiagnostics(
+                        adapter: adapter,
+                        root: sandbox,
+                        selection: selection,
+                        timeout: TimeInterval(configuration.timeouts.buildSeconds),
+                        runner: runner,
+                        to: baselineLog
+                    )
+                }
+                throw MutationEngineError.baselineFailed(log: baselineLog, timedOut: baseline.timedOut)
+            }
             guard let baselineTestCount = executedTestCount(in: baseline.output), baselineTestCount > 0 else {
                 throw MutationEngineError.baselineRanNoTests(log: baselineLog)
             }
@@ -825,6 +841,86 @@ public struct MutationEngine: Sendable {
             guard projectURL.pathExtension == "xcodeproj", FileManager.default.fileExists(atPath: projectURL.path), let target = configuration.project.testTarget, !target.isEmpty else { throw MutationEngineError.invalidProject("Xcode project runs require an existing .xcodeproj path and --test-target.") }
         case .xcodeWorkspace:
             guard projectURL.pathExtension == "xcworkspace", FileManager.default.fileExists(atPath: projectURL.path), let target = configuration.project.testTarget, !target.isEmpty else { throw MutationEngineError.invalidProject("Xcode workspace runs require an existing .xcworkspace path and --test-target.") }
+        }
+    }
+
+    private func appendBaselineFailureDetails(command: CommandSpec, result: CommandResult, originalProject: URL, to log: URL) {
+        let outcome = result.timedOut ? "timed out" : "exited with status \(result.exitCode)"
+        let commandLine = ([command.executable] + command.arguments).map { argument in
+            "'" + argument.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        }.joined(separator: " ")
+        var details = "\n\n--- mutest-swift baseline failure details ---\n"
+        details += "Result: \(outcome)\n"
+        details += "Elapsed: \(String(format: "%.2f", result.elapsed))s\n"
+        details += "Original project: \(originalProject.path)\n"
+        details += "Isolated working directory: \(command.workingDirectory.path)\n"
+        details += "Command: \(commandLine)\n"
+        if result.output.trimmingCharacters(in: .whitespacesAndNewlines) == "error: fatalError" {
+            details += "The test command emitted only the generic 'error: fatalError' message; it provided no test name, source location, or additional output.\n"
+        }
+        appendLogText(details, to: log)
+    }
+
+    private func appendVerboseSwiftPMBuildDiagnostics(
+        adapter: NativeTestAdapter,
+        root: URL,
+        selection: ResolvedTestSelection,
+        timeout: TimeInterval,
+        runner: ProcessRunner,
+        to log: URL
+    ) {
+        let diagnosticLog = log.deletingLastPathComponent().appendingPathComponent("baseline-diagnostics.tmp")
+        defer { try? FileManager.default.removeItem(at: diagnosticLog) }
+        do {
+            var command = try adapter.command(
+                root: root,
+                phase: .buildForTesting,
+                resolved: selection,
+                environment: [:],
+                timeout: timeout,
+                output: diagnosticLog
+            )
+            command.arguments.append("-v")
+            let result = try runner.run(command)
+            let compilerDiagnostics = Self.compilerDiagnostics(from: result.output)
+            let details: String
+            if !compilerDiagnostics.isEmpty {
+                details = "\n--- Verbose SwiftPM build diagnostics ---\n\(compilerDiagnostics)\n"
+            } else {
+                let status = result.timedOut ? "timed out" : "exited with status \(result.exitCode)"
+                details = "\n--- Verbose SwiftPM build diagnostics ---\nThe diagnostic build \(status) but emitted no compiler error details. The baseline failure may have occurred while launching or running tests.\n"
+            }
+            appendLogText(details, to: log)
+        } catch {
+            appendLogText("\n--- Verbose SwiftPM build diagnostics ---\nCould not run the diagnostic build: \(error)\n", to: log)
+        }
+    }
+
+    private static func compilerDiagnostics(from output: String) -> String {
+        let lines = output.components(separatedBy: .newlines)
+        var selected: [String] = []
+        var seen = Set<String>()
+        for index in lines.indices where lines[index].contains("error:") {
+            let end = min(lines.count - 1, index + 4)
+            for contextIndex in index...end {
+                let line = lines[contextIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !line.isEmpty, seen.insert(line).inserted else { continue }
+                selected.append(line.count > 1_000 ? String(line.prefix(1_000)) + "…" : line)
+                if selected.joined(separator: "\n").count > 8_000 { break }
+            }
+            if selected.joined(separator: "\n").count > 8_000 { break }
+        }
+        return selected.joined(separator: "\n")
+    }
+
+    private func appendLogText(_ text: String, to log: URL) {
+        guard let handle = try? FileHandle(forWritingTo: log) else { return }
+        defer { try? handle.close() }
+        do {
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(text.utf8))
+        } catch {
+            // Keep the original baseline output intact if diagnostic details cannot be appended.
         }
     }
 

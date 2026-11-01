@@ -46,20 +46,24 @@ cd mutest-swift
 ./run /path/to/MyApp.xcodeproj
 ```
 
-For a Swift package, pass its folder instead:
+For an iOS or iPadOS Swift package inside an Xcode project or workspace, pass the package folder or its containing Xcode project:
 
 ```sh
-./run /path/to/MySwiftPackage
+./run /path/to/MyApp/Modules/MyPackage
+# or
+./run /path/to/MyApp/MyApp.xcodeproj
 ```
 
-For an Xcode project or workspace, the tool asks which scheme, test target, and simulator to use. Press Enter to choose the first scheme or simulator. You can pass those choices as options to skip the prompts.
+When you pass a package folder, `./run` finds its enclosing Xcode project or workspace and runs the matching package scheme on a simulator. It does not fall back to `swift test` on the Mac. A package without an enclosing Xcode project or workspace cannot run iOS or iPadOS tests this way.
+
+For an Xcode project or workspace, the tool asks which scheme, test target, and simulator to use. If you pass a package folder and its name matches an Xcode scheme, that scheme is selected automatically. Press Enter to choose the first option in other menus. You can pass the choices as options to skip the prompts. iPhone and iPad simulators are supported.
 
 <details>
 <summary>CLI options</summary>
 
 | Option | Values or default | What it does |
 | --- | --- | --- |
-| `PROJECT` | Swift package folder, `.xcodeproj`, `.xcworkspace`, or folder containing one; defaults to `.` | Project to test. |
+| `PROJECT` | iOS/iPadOS package folder with an enclosing Xcode project/workspace, `.xcodeproj`, `.xcworkspace`, or folder containing one; defaults to `.` | Project to test. |
 | `--scheme NAME` | Xcode scheme | Selects an Xcode scheme. Asked interactively if missing. |
 | `--target NAME` or `--test-target NAME` | Xcode test target | Selects the tests to run. Asked interactively if missing. |
 | `--destination VALUE` | Xcode destination string | Chooses the simulator. Asked interactively if missing. |
