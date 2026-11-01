@@ -6,44 +6,45 @@ Mutation testing for Swift packages and Xcode apps. Use it from the command line
 
 ### 1. Run locally
 
-Requirements: macOS 14 or newer, Xcode, and a Swift 6.4-compatible toolchain.
+Requirements: macOS 14 or newer, Xcode, Python 3, and a Swift 6.4-compatible toolchain.
 
-Clone the tool and enter its folder:
+Clone the tool, enter its folder, and point `./run` at your codebase:
 
 ```sh
 git clone https://github.com/jamilkhan55/mutest-swift.git
 cd mutest-swift
+./run /path/to/your/project
 ```
 
-Check the included sample package. This preflight checks project and test discovery; it does not run mutations:
+The first run builds the command line tool. Swift packages run directly. For an Xcode project or workspace, `./run` lists the schemes, test targets, and installed iPhone simulators, then asks you to choose. Press Enter to choose the first scheme or simulator. To launch it from your project folder without giving a project path, use the script from your cloned tool repository:
 
 ```sh
-swift run swift-mutation-testing validate --project Fixtures/SwiftPackage
+cd /path/to/your/project
+/path/to/mutest-swift/run
 ```
 
-Run mutation testing on that sample:
+For this sample project, choose **MutationTest** to run the combined app test target, including tests from the local packages. Choose a `Checkout...` scheme to run only that package's tests. In the scheme menu, press Enter to choose the first option.
+
+Pass choices as flags to skip the prompts. `--target` selects the Xcode test target; `--target-file` and `--target-tests` select tests. `--source` limits mutation locations, while tests still run across the full configured target unless test selectors are supplied.
 
 ```sh
-swift run swift-mutation-testing run \
-  --project Fixtures/SwiftPackage \
-  --project-kind swift-package \
-  --operators relational,logical \
-  --operator-tier experimental \
-  --output /tmp/mutest-report
+./run /path/to/MyApp.xcodeproj \
+  --scheme MyApp \
+  --target MyAppTests \
+  --destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+  --parallelism 2
 ```
 
-The first `swift run` builds the CLI. Reports are written to `/tmp/mutest-report`.
-
-For your own Swift package, replace the sample path:
+Useful options:
 
 ```sh
-swift run swift-mutation-testing run \
-  --project /path/to/MyPackage \
-  --project-kind swift-package \
-  --operator-tier experimental
+./run --help
+./run /path/to/project --validate
+./run /path/to/project --parallelization 2 --target-file CheckoutTests.swift --target-tests checkoutTotal
+./run /path/to/project --source Sources/Checkout
 ```
 
-With no test selector, the full test target runs. Add `--source Sources/Feature` to restrict where mutants are made; that does not restrict which tests run.
+Reports are written to `.swift-mutation-testing/` inside the project by default. The tool mutates a temporary copy, leaving your source files unchanged. Xcode simulator builds use the Mac's architecture by default. To override it, pass settings such as `--xcodebuild-arg ARCHS=arm64 --xcodebuild-arg ONLY_ACTIVE_ARCH=YES`.
 
 ### 2. Run with GitHub Actions
 
@@ -113,9 +114,6 @@ Use the same CLI or Actions, and set the Xcode project details. Build the CLI be
     scheme: MyApp
     test-target: MyAppTests
     destination: platform=iOS Simulator,name=iPhone 17,OS=latest
-    xcodebuild-arg: |
-      ARCHS=arm64
-      ONLY_ACTIVE_ARCH=YES
     operator-tier: experimental
     parallelism: "2"
 ```
@@ -125,11 +123,10 @@ Replace the simulator name with one installed on your Mac. All seven operators a
 For two iOS Simulator mutation workers from the CLI:
 
 ```sh
-swift run swift-mutation-testing run \
-  --project /path/to/MyApp.xcodeproj --project-kind xcode-project \
-  --scheme MyApp --test-target MyAppTests \
+./run /path/to/MyApp.xcodeproj \
+  --scheme MyApp --target MyAppTests \
   --destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
-  --operator-tier experimental --parallelism 2
+  --parallelism 2
 ```
 
 The tool creates two temporary simulators matching that destination, checks the baseline on each, and runs one mutant per worker. Each mutant uses all tests in `MyAppTests` unless you supply test selectors. Use `--parallelism 1` (or `parallelism: "1"` in the Action) for serial execution. Simulators are reused during the campaign and deleted afterward; the original simulator is used only as a template. Xcode workspaces use `--project-kind xcode-workspace`. Other destination platforms run serially and log the reason.
@@ -148,7 +145,7 @@ A shut-down template is cloned to reuse its completed simulator setup. A booted 
 
 ## More
 
-- CLI options: `swift run swift-mutation-testing help`.
+- CLI options: `./run --help`.
 - Tool tests: `swift test`.
 - Operator details: [`Docs/OPERATORS.md`](Docs/OPERATORS.md).
 - Shared rules and report schemas: [`mutest-core`](https://github.com/jamilkhan55/mutest-core).

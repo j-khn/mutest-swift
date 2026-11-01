@@ -37,6 +37,26 @@ final class FakeSimulators: @unchecked Sendable {
 
 @Suite("Xcode worker isolation", .serialized)
 struct XcodeWorkerTests {
+    @Test("Xcode simulator builds use the host architecture unless the caller overrides it")
+    func simulatorBuildArchitecture() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let project = ProjectConfiguration(kind: .xcodeProject, path: "Fixture.xcodeproj", scheme: "Fixture", testTarget: "FixtureTests")
+        let context = XcodeTestExecutionContext(destination: "platform=iOS Simulator,id=owned", derivedDataPath: root.appendingPathComponent("DerivedData"))
+        let adapter = NativeTestAdapter(project: project, selection: .init())
+        let command = try adapter.command(root: root, phase: .buildForTesting, resolved: .init(identifiers: [], allTests: true), environment: [:], timeout: 30, output: root.appendingPathComponent("build.log"), xcodeContext: context)
+        #if arch(arm64)
+        #expect(command.arguments.contains("ARCHS=arm64"))
+        #elseif arch(x86_64)
+        #expect(command.arguments.contains("ARCHS=x86_64"))
+        #endif
+        #expect(command.arguments.contains("ONLY_ACTIVE_ARCH=YES"))
+
+        let explicit = NativeTestAdapter(project: project, selection: .init(), xcodebuildArguments: ["ARCHS=arm64", "ONLY_ACTIVE_ARCH=NO"])
+        let explicitCommand = try explicit.command(root: root, phase: .buildForTesting, resolved: .init(identifiers: [], allTests: true), environment: [:], timeout: 30, output: root.appendingPathComponent("explicit-build.log"), xcodeContext: context)
+        #expect(explicitCommand.arguments.filter { $0.hasPrefix("ARCHS=") } == ["ARCHS=arm64"])
+        #expect(explicitCommand.arguments.filter { $0.hasPrefix("ONLY_ACTIVE_ARCH=") } == ["ONLY_ACTIVE_ARCH=NO"])
+    }
+
     private var template: XcodeSimulatorTemplate {
         .init(deviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-17", runtime: "com.apple.CoreSimulator.SimRuntime.iOS-27-2", runtimeVersion: "27.2", runtimeBuild: "test-build")
     }
@@ -192,7 +212,7 @@ struct XcodeWorkerTests {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let adapter = NativeTestAdapter(project: .init(kind: .xcodeWorkspace, path: "Fixture.xcworkspace", scheme: "Fixture", testTarget: "FixtureTests"), selection: .init())
         let context = XcodeTestExecutionContext(destination: "platform=iOS Simulator,id=owned", derivedDataPath: root.appendingPathComponent("workerData"), testRunFile: root.appendingPathComponent("attempt.xctestrun"), resultBundlePath: root.appendingPathComponent("result.xcresult"))
-        let command = try adapter.command(root: root, phase: .testWithoutBuilding, resolved: .init(identifiers: ["FixtureTests/RuleTests/testRule()"], allTests: false), environment: [:], timeout: 30, output: root.appendingPathComponent("attempt.log"), xcodeContext: context)
+        let command = try adapter.command(root: root, phase: .testWithoutBuilding, resolved: .init(identifiers: ["FixtureTests/RuleTests/testRule()"], allTests: false), environment: [:], timeout: 30, output: root.appendingPathComponent("attempt.log"), stopOnActivatedTestFailure: true, activationID: "mutant", xcodeContext: context)
         #expect(command.arguments.contains("-xctestrun"))
         #expect(!command.arguments.contains("-workspace") && !command.arguments.contains("-scheme"))
         #expect(command.arguments.contains("-only-testing:FixtureTests/RuleTests/testRule()"))
@@ -200,6 +220,10 @@ struct XcodeWorkerTests {
         #expect(command.arguments[index + 1] == "NO")
         #expect(command.arguments.contains(context.derivedDataPath.path))
         #expect(command.arguments.contains(context.resultBundlePath!.path))
+        let diagnostics = try #require(command.arguments.firstIndex(of: "-collect-test-diagnostics"))
+        #expect(command.arguments[diagnostics + 1] == "never")
+        let baseline = try adapter.command(root: root, phase: .testWithoutBuilding, resolved: .init(identifiers: [], allTests: true), environment: [:], timeout: 30, output: root.appendingPathComponent("baseline.log"), xcodeContext: context)
+        #expect(!baseline.arguments.contains("-collect-test-diagnostics"))
     }
 
     @Test("baseline counts add both frameworks without adding nested XCTest totals twice")

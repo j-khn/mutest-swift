@@ -47,8 +47,7 @@ public struct SwiftTestSelectorResolver: Sendable {
             if let enumerator = FileManager.default.enumerator(at: projectRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) {
                 for case let file as URL in enumerator {
                     let relative = String(file.path.dropFirst(projectRoot.path.count + 1))
-                    let components = relative.split(separator: "/").map(String.init)
-                    if components.contains(where: { [".git", ".build", ".swiftpm", ".swift-mutation-testing", "DerivedData"].contains($0) }) {
+                    if ProjectFilePaths.isGenerated(relative) {
                         if (try? file.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { enumerator.skipDescendants() }
                         continue
                     }
@@ -175,6 +174,29 @@ public struct XcodeTestExecutionContext: Sendable {
     }
 }
 
+enum XcodeSimulatorBuildSettings {
+    static func defaults(for arguments: [String], destination: String?) -> [String] {
+        guard destination?.localizedCaseInsensitiveContains("simulator") == true else { return [] }
+        let hasArchitectureOverride = arguments.contains { argument in
+            argument.hasPrefix("ARCHS=") || argument.hasPrefix("ONLY_ACTIVE_ARCH=")
+        }
+        guard !hasArchitectureOverride else { return [] }
+
+        #if arch(arm64)
+        let architecture = "arm64"
+        #elseif arch(x86_64)
+        let architecture = "x86_64"
+        #else
+        return []
+        #endif
+
+        // Xcode may build the app target for both simulator architectures while Swift
+        // package products in the same build only contain the host architecture. Pin the
+        // mutation build to the simulator architecture available on this Mac.
+        return ["ARCHS=\(architecture)", "ONLY_ACTIVE_ARCH=YES"]
+    }
+}
+
 public struct NativeTestAdapter: Sendable {
     public var project: ProjectConfiguration
     public var selection: TestSelection
@@ -213,16 +235,22 @@ public struct NativeTestAdapter: Sendable {
             case .baseline: action = "test"
             }
             var args = ["xcodebuild", action]
+            let destination = xcodeContext?.destination ?? project.destination
             if phase == .testWithoutBuilding, let manifest = xcodeContext?.testRunFile {
                 args += ["-xctestrun", manifest.path]
             } else {
                 args += project.kind == .xcodeWorkspace ? ["-workspace", projectPath] : ["-project", projectPath]
                 args += ["-scheme", scheme]
                 args += xcodebuildArguments
+                args += XcodeSimulatorBuildSettings.defaults(for: xcodebuildArguments, destination: destination)
             }
-            if let destination = xcodeContext?.destination ?? project.destination { args += ["-destination", destination] }
+            if let destination { args += ["-destination", destination] }
             args += ["-derivedDataPath", (xcodeContext?.derivedDataPath ?? root.appendingPathComponent(".swift-mutation-testing/DerivedData")).path]
             args += ["-parallel-testing-enabled", "NO"]
+            if stopOnActivatedTestFailure {
+                // Expected mutant failures do not need a full simulator sysdiagnose.
+                args += ["-collect-test-diagnostics", "never"]
+            }
             if let bundle = xcodeContext?.resultBundlePath { args += ["-resultBundlePath", bundle.path] }
             if resolved.allTests, let testTarget = project.testTarget, !testTarget.isEmpty {
                 args.append("-only-testing:\(testTarget)")

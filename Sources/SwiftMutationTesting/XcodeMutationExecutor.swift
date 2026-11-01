@@ -13,6 +13,13 @@ private final class XcodeExecutionState: @unchecked Sendable {
     private var mutantTestRunCountWithoutReportedCaseCount = 0
     private var mutantTestRuns: [MutantTestRunDetails] = []
     private var isolatedBuildSeconds: TimeInterval = 0
+    private var resultBundles: [URL] = []
+
+    func resultBundle(_ url: URL) { lock.lock(); resultBundles.append(url); lock.unlock() }
+    func removeResultBundles() {
+        lock.lock(); let bundles = resultBundles; lock.unlock()
+        for bundle in bundles { try? FileManager.default.removeItem(at: bundle) }
+    }
 
     func baseline(_ count: Int) { lock.lock(); baselineCounts.append(count); lock.unlock() }
     func testRun(_ details: MutantTestRunDetails) {
@@ -85,6 +92,9 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         let pool = try XcodeSimulatorPool(template: template, count: workerCount, output: output,
             registryDirectory: workerRegistryDirectory ?? XcodeSimulatorPool.persistentRegistryDirectory(), run: commandRunner, teardownRun: cleanupRunner)
         var cleaned = false
+        // Xcode may finish writing result attachments after an attempt returns.
+        // Sweep this campaign's bundles again after worker teardown to catch late files.
+        defer { state.removeResultBundles() }
         defer { for worker in pool.workers { if let root = worker.isolatedRoot { try? FileManager.default.removeItem(at: root) } } }
         defer { if !cleaned { for warning in pool.cleanup() { mutationLog(warning.message) } } }
         var timings = MutationTimings()
@@ -297,13 +307,17 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         let environment = mutantID.map { ["SWIFT_MUTATION_ID": $0] } ?? [:]
         let manifest = try artifacts.invocationManifest(environment: environment)
         defer { try? FileManager.default.removeItem(at: manifest) }
-        let bundle = output.appendingPathComponent("results/\(label)-\(UUID().uuidString).xcresult")
+        // Baseline counts come from the test output, so only mutant runs need an xcresult
+        // bundle for the per-file test-name report. Remove each bundle as soon as it is read.
+        let bundle = mutantID.map { _ in output.appendingPathComponent("results/\(label)-\(UUID().uuidString).xcresult") }
+        if let bundle { state.resultBundle(bundle) }
+        defer { if let bundle { try? FileManager.default.removeItem(at: bundle) } }
         let command = try adapter.command(root: worker.isolatedRoot ?? sandbox, phase: .testWithoutBuilding,
             resolved: selection, environment: [:], timeout: timeout, output: log(label),
             stopOnActivatedTestFailure: mutantID != nil, activationID: mutantID,
             xcodeContext: .init(destination: worker.destination, derivedDataPath: worker.directory.appendingPathComponent("DerivedData"), testRunFile: manifest, resultBundlePath: bundle))
         let result = try commandRunner(command)
-        if let mutantID {
+        if let mutantID, let bundle {
             let testCases = try XcodeTestResultReader.readCases(from: bundle, relativeTo: worker.isolatedRoot ?? sandbox)
             state.testRun(.init(mutantId: mutantID, source: source ?? "<unknown>",
                                 reportedCaseCount: TestExecutionCount.parse(result.output), testCases: testCases))
@@ -322,7 +336,11 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         if let error = state.snapshot().errors.first { throw error }
     }
     private func restoreSources(in root: URL) throws {
-        for (path, source) in sources { try source.write(to: root.appendingPathComponent(path), atomically: true, encoding: .utf8) }
+        for (path, source) in sources {
+            let destination = root.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try source.write(to: destination, atomically: true, encoding: .utf8)
+        }
     }
     private func log(_ label: String) -> URL { output.appendingPathComponent("logs/\(label).log") }
 }

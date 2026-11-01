@@ -52,7 +52,6 @@ runs:
           ${{ runner.temp }}/${{ inputs.output-path }}/validation.md
           ${{ runner.temp }}/${{ inputs.output-path }}/*/report.json
           ${{ runner.temp }}/${{ inputs.output-path }}/*/report.md
-          ${{ runner.temp }}/${{ inputs.output-path }}/*/stryker.json
           ${{ runner.temp }}/${{ inputs.output-path }}/*/cli.log
           ${{ runner.temp }}/${{ inputs.output-path }}/*/logs/**
         if-no-files-found: warn

@@ -48,7 +48,6 @@ public enum MutationReportWriter {
     public static func write(
         _ report: MutationReport,
         to directory: URL,
-        sourceContents: [String: String] = [:],
         formats: Set<String> = ["console", "json", "markdown"],
         runDetails: MutationRunSummaryDetails? = nil
     ) throws {
@@ -59,7 +58,6 @@ public enum MutationReportWriter {
             var document = try JSONSerialization.jsonObject(with: encoder.encode(report)) as! [String: Any]
             if let runDetails { document["execution"] = try JSONSerialization.jsonObject(with: encoder.encode(runDetails)) }
             try JSONSerialization.data(withJSONObject: document, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]).write(to: directory.appendingPathComponent("report.json"), options: .atomic)
-            try encoder.encode(StrykerCompatibleReport(report: report, sourceContents: sourceContents)).write(to: directory.appendingPathComponent("stryker.json"), options: .atomic)
         }
         if formats.contains("markdown") {
             try markdown(report, runDetails: runDetails).write(to: directory.appendingPathComponent("report.md"), atomically: true, encoding: .utf8)
@@ -212,62 +210,5 @@ public enum MutationReportWriter {
         if hours > 0 { return "\(hours)h \(minutes)m \(remainingSeconds)s" }
         if minutes > 0 { return "\(minutes)m \(remainingSeconds)s" }
         return "\(remainingSeconds)s"
-    }
-}
-
-private struct StrykerCompatibleReport: Encodable {
-    struct Location: Encodable {
-        struct Point: Encodable { var line: Int; var column: Int }
-        var start: Point
-        var end: Point
-    }
-    struct Mutant: Encodable {
-        var id: String
-        var mutatorName: String
-        var replacement: String
-        var location: Location
-        var status: String
-        var killedBy: [String]
-        var duration: Double
-        var description: String
-    }
-    struct FileEntry: Encodable { var language: String; var source: String; var mutants: [Mutant] }
-    var schemaVersion = "1.0.0"
-    var thresholds: [String: Int]
-    var files: [String: FileEntry]
-
-    init(report: MutationReport, sourceContents: [String: String]) {
-        thresholds = ["high": 80, "low": 60]
-        var grouped: [String: [Mutant]] = [:]
-        for record in report.mutants {
-            let status: String
-            switch record.status {
-            case .killed: status = "Killed"
-            case .survived: status = "Survived"
-            case .noCoverage: status = "NoCoverage"
-            case .timeout: status = "Timeout"
-            case .unbuildable: status = "CompileError"
-            case .suppressed: status = "Ignored"
-            }
-            let mutant = Mutant(
-                id: record.id,
-                mutatorName: record.operatorID.rawValue,
-                replacement: record.replacement,
-                location: .init(start: .init(line: record.line, column: record.column), end: .init(line: record.line + record.original.filter(\.isNewline).count, column: Self.endColumn(record))),
-                status: status,
-                killedBy: [],
-                duration: (record.durationSeconds ?? 0) * 1_000,
-                description: "\(record.operatorID.rawValue): \(record.original) -> \(record.replacement)"
-            )
-            grouped[record.source, default: []].append(mutant)
-        }
-        files = Dictionary(uniqueKeysWithValues: grouped.map { path, mutants in
-            (path, FileEntry(language: "swift", source: sourceContents[path] ?? "", mutants: mutants))
-        })
-    }
-
-    private static func endColumn(_ record: MutantRecord) -> Int {
-        guard let newline = record.original.lastIndex(of: "\n") else { return record.column + max(1, record.original.utf8.count) }
-        return max(1, record.original[record.original.index(after: newline)...].utf8.count + 1)
     }
 }

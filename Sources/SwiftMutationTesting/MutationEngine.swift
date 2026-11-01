@@ -4,6 +4,16 @@ import MutationTestingSpec
 import Darwin
 #endif
 
+enum ProjectFilePaths {
+    private static let generatedDirectories: Set<String> = [
+        ".git", ".build", ".build-xcode", ".swiftpm", ".swift-mutation-testing", "DerivedData"
+    ]
+
+    static func isGenerated(_ relativePath: String) -> Bool {
+        relativePath.split(separator: "/").contains { generatedDirectories.contains(String($0)) }
+    }
+}
+
 public enum MutationEngineError: Error, CustomStringConvertible {
     case invalidProject(String)
     case baselineFailed(log: URL, timedOut: Bool)
@@ -185,6 +195,7 @@ public struct MutationEngine: Sendable {
         let runMetrics = MutationRunMetrics()
         let projectURL = URL(fileURLWithPath: configuration.project.path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
         let root = configuration.project.kind == .swiftPackage ? projectURL : projectURL.deletingLastPathComponent()
+        mutationLog("Starting \(configuration.project.kind.rawValue) mutation run.")
         var adapterProject = configuration.project
         if configuration.project.kind != .swiftPackage { adapterProject.path = projectURL.lastPathComponent }
         try validate(configuration: configuration, root: root, projectURL: projectURL)
@@ -201,14 +212,19 @@ public struct MutationEngine: Sendable {
             if FileManager.default.fileExists(atPath: previous.path) { try FileManager.default.removeItem(at: previous) }
         }
         var timings = MutationTimings()
+        if configuration.project.kind != .swiftPackage {
+            mutationLog("Resolving Xcode simulator destination…")
+        }
         let simulatorTemplate = configuration.project.kind == .swiftPackage ? nil : try XcodeSimulatorTemplate.load(destination: configuration.project.destination, logs: logs)
         let sandboxCopyStarted = Date()
+        mutationLog("Creating isolated project sandbox…")
         let sandbox = try makeSandbox(
             from: root,
             into: output.appendingPathComponent("sandboxes", isDirectory: true),
             excluding: [output] + (cacheDirectory.map { [$0] } ?? [])
         )
         timings.sandboxCopySeconds = Date().timeIntervalSince(sandboxCopyStarted)
+        mutationLog("Project sandbox ready in \(String(format: "%.1f", timings.sandboxCopySeconds))s.")
         var auxiliarySandboxes: [URL] = []
         var sandboxRemoved = false
         defer {
@@ -218,6 +234,7 @@ public struct MutationEngine: Sendable {
             }
         }
         let testDiscoveryStarted = Date()
+        mutationLog("Discovering selected tests…")
         let selection = try SwiftTestSelectorResolver().resolve(
             projectRoot: root,
             selection: configuration.tests,
@@ -225,6 +242,7 @@ public struct MutationEngine: Sendable {
             forXcode: configuration.project.kind != .swiftPackage
         )
         timings.testDiscoverySeconds = Date().timeIntervalSince(testDiscoveryStarted)
+        mutationLog("Test discovery complete: \(selection.identifiers.count) selected test identifiers\(selection.allTests ? " (full target)" : "").")
         let adapter = NativeTestAdapter(project: adapterProject, selection: configuration.tests, xcodebuildArguments: xcodebuildArguments)
         let runner = ProcessRunner()
         let baselineLog = logs.appendingPathComponent("baseline.log")
@@ -232,6 +250,7 @@ public struct MutationEngine: Sendable {
         var mutationPhaseStarted: Date?
         func validateBaseline(phase: TestPhase) throws {
             let baselineStarted = Date()
+            mutationLog("Running baseline tests…")
             let baseline = try runner.run(adapter.command(root: sandbox, phase: phase, resolved: selection, environment: [:], timeout: TimeInterval(configuration.timeouts.baselineSeconds), output: baselineLog))
             timings.baselineSeconds += Date().timeIntervalSince(baselineStarted)
             guard !baseline.timedOut && baseline.exitCode == 0 else { throw MutationEngineError.baselineFailed(log: baselineLog, timedOut: baseline.timedOut) }
@@ -244,7 +263,9 @@ public struct MutationEngine: Sendable {
         }
 
         let sourceDiscoveryStarted = Date()
-        let sourceFiles = try discoverSources(root: root, requested: configuration.source, kind: configuration.project.kind)
+        mutationLog("Discovering mutation source files…")
+        let sourceFiles = try discoverSources(root: root, requested: configuration.source, kind: configuration.project.kind,
+            excluding: [output] + (cacheDirectory.map { [$0] } ?? []))
         guard !sourceFiles.isEmpty else { throw MutationEngineError.noSourceFiles("No Swift source files found in the selected source scope.") }
         var candidates: [MutationCandidate] = []
         let generator = SwiftMutationGenerator()
@@ -255,6 +276,7 @@ public struct MutationEngine: Sendable {
         }
         candidates.sort { ($0.source, $0.span.start) < ($1.source, $1.span.start) }
         timings.sourceDiscoverySeconds = Date().timeIntervalSince(sourceDiscoveryStarted)
+        mutationLog("Mutation discovery complete: \(sourceFiles.count) source files, \(candidates.count) candidates.")
 
         var digestConfiguration = configuration
         digestConfiguration.project.path = configuration.project.kind == .swiftPackage ? "." : adapterProject.path
@@ -713,9 +735,6 @@ public struct MutationEngine: Sendable {
         sandboxRemoved = true
         timings.cleanupSeconds += Date().timeIntervalSince(cleanupStarted)
         let report = MutationReport(scope: .init(sources: selectedSources, tests: selection.identifiers, allTests: selection.allTests), mutants: orderedRecords, integrityWarnings: warnings, qualityGate: gate, timings: timings)
-        let sourceContents = Dictionary(uniqueKeysWithValues: try sourceFiles.map { file in
-            (relativePath(file, root: root), try String(contentsOf: file, encoding: .utf8))
-        })
         let runMetricsSnapshot = runMetrics.snapshot()
         let runDetails = MutationRunSummaryDetails(
             testTarget: configuration.project.testTarget,
@@ -731,7 +750,7 @@ public struct MutationEngine: Sendable {
             mutantTestRuns: xcodeExecution?.mutantTestRuns ?? [],
             simulatorSetupSeconds: xcodeExecution?.simulatorSetupSeconds ?? 0
         )
-        try MutationReportWriter.write(report, to: output, sourceContents: sourceContents, formats: Set(configuration.output.formats), runDetails: runDetails)
+        try MutationReportWriter.write(report, to: output, formats: Set(configuration.output.formats), runDetails: runDetails)
         return report
     }
 
@@ -821,35 +840,59 @@ public struct MutationEngine: Sendable {
         try FileManager.default.copyItem(at: source, to: destination)
     }
 
-    private func discoverSources(root: URL, requested: [String], kind: ProjectKind) throws -> [URL] {
+    func discoverSources(root: URL, requested: [String], kind: ProjectKind, excluding excludedPaths: [URL] = []) throws -> [URL] {
         let manager = FileManager.default
-        let paths: [String]
-        if !requested.isEmpty {
-            paths = requested
-        } else if kind == .swiftPackage {
-            paths = (try? manager.subpathsOfDirectory(atPath: root.appendingPathComponent("Sources").path))?.filter { $0.hasSuffix(".swift") }.map { "Sources/\($0)" } ?? []
-        } else {
-            paths = (try? manager.subpathsOfDirectory(atPath: root.path))?.filter { path in
-                let components = path.split(separator: "/").map { $0.lowercased() }
-                let fileBase = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent.lowercased()
-                let isTestPath = components.contains { $0 == "test" || $0 == "tests" || $0.hasSuffix("tests") }
-                    || fileBase.hasSuffix("test") || fileBase.hasSuffix("tests")
-                return path.hasSuffix(".swift") && !isTestPath && !path.contains("/.build/") && !path.contains("/.git/") && !path.contains("/DerivedData/") && !path.contains("/.swift-mutation-testing/")
-            } ?? []
+        let root = root.standardizedFileURL
+        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        let excludedRoots = excludedPaths.map { $0.standardizedFileURL.path }
+        func isExcluded(_ file: URL) -> Bool {
+            let path = file.standardizedFileURL.path
+            let relative = path == root.path ? "" : relativePath(file, root: root)
+            return ProjectFilePaths.isGenerated(relative)
+                || excludedRoots.contains { path == $0 || path.hasPrefix($0.hasSuffix("/") ? $0 : $0 + "/") }
         }
+        func isTestPath(_ file: URL) -> Bool {
+            guard file.standardizedFileURL.path != root.path else { return false }
+            let relative = relativePath(file, root: root)
+            return relative.split(separator: "/").contains {
+                let component = $0.lowercased()
+                return component == "test" || component == "tests" || component.hasSuffix("tests")
+            } || file.deletingPathExtension().lastPathComponent.lowercased().hasSuffix("test")
+                || file.deletingPathExtension().lastPathComponent.lowercased().hasSuffix("tests")
+        }
+        func isSource(_ file: URL) -> Bool {
+            let name = file.lastPathComponent
+            return file.pathExtension == "swift" && name != "Package.swift" && !name.hasPrefix("Package@swift-")
+                && !isExcluded(file) && !isTestPath(file)
+        }
+
+        let paths = requested.isEmpty ? (kind == .swiftPackage ? ["Sources"] : ["."]) : requested
         var result: [URL] = []
         for item in paths {
-            let selectedURL = URL(fileURLWithPath: item, relativeTo: root).standardizedFileURL
-            let path = selectedURL
+            let path = URL(fileURLWithPath: item, relativeTo: root).standardizedFileURL
+            guard path.path == root.path || path.path.hasPrefix(rootPrefix) else {
+                throw MutationEngineError.invalidProject("Source selector must be inside the project: \(item)")
+            }
+            guard !isExcluded(path) else {
+                throw MutationEngineError.invalidProject("Source selector points into generated output or a build/cache directory: \(item)")
+            }
             var isDirectory: ObjCBool = false
-            guard manager.fileExists(atPath: path.path, isDirectory: &isDirectory) else { throw MutationEngineError.invalidProject("Source selector does not exist: \(item)") }
+            guard manager.fileExists(atPath: path.path, isDirectory: &isDirectory) else {
+                if requested.isEmpty && kind == .swiftPackage { continue }
+                throw MutationEngineError.invalidProject("Source selector does not exist: \(item)")
+            }
             if isDirectory.boolValue {
-                let nested = try manager.subpathsOfDirectory(atPath: path.path).filter { $0.hasSuffix(".swift") }
-                result += nested.map { path.appendingPathComponent($0) }
-            } else if path.pathExtension == "swift" { result.append(path) }
+                guard !isTestPath(path), let enumerator = manager.enumerator(at: path, includingPropertiesForKeys: [.isDirectoryKey]) else { continue }
+                for case let file as URL in enumerator {
+                    if isExcluded(file) || isTestPath(file) {
+                        if (try? file.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { enumerator.skipDescendants() }
+                        continue
+                    }
+                    if isSource(file) { result.append(file.standardizedFileURL) }
+                }
+            } else if isSource(path) { result.append(path) }
         }
-        let rootPath = root.path.hasSuffix("/") ? root.path : root.path + "/"
-        return Array(Set(result.filter { $0.path.hasPrefix(rootPath) })).sorted { $0.path < $1.path }
+        return Array(Set(result)).sorted { $0.path < $1.path }
     }
 
     private func relativePath(_ file: URL, root: URL) -> String {
@@ -870,9 +913,8 @@ public struct MutationEngine: Sendable {
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey]) {
             for case let file as URL in enumerator {
                 let relative = relativePath(file, root: root)
-                let pathComponents = relative.split(separator: "/").map(String.init)
                 let isRunArtifact = excludedRelativePaths.contains { relative == $0 || relative.hasPrefix($0 + "/") }
-                if isRunArtifact || pathComponents.contains(where: { [".git", ".build", ".swiftpm", ".swift-mutation-testing", "DerivedData"].contains($0) }) {
+                if isRunArtifact || ProjectFilePaths.isGenerated(relative) {
                     if (try? file.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { enumerator.skipDescendants() }
                     continue
                 }
@@ -887,7 +929,13 @@ public struct MutationEngine: Sendable {
         configurationEncoder.outputFormatting = [.sortedKeys]
         let configData = try configurationEncoder.encode(configuration)
         var content = Data()
-        for (path, file) in inputs.sorted(by: { $0.key < $1.key }) {
+        let orderedInputs = inputs.sorted(by: { $0.key < $1.key })
+        let estimatedBytes = orderedInputs.reduce(Int64(0)) { total, item in
+            total + Int64((try? item.value.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        mutationLog("Hashing project inputs: \(orderedInputs.count) files (\(ByteCountFormatter.string(fromByteCount: estimatedBytes, countStyle: .file))).")
+        for (index, item) in orderedInputs.enumerated() {
+            let (path, file) = item
             let data = try Data(contentsOf: file, options: [.mappedIfSafe])
             let fileDigest = SHA256Digest.hash(data)
             content.append(contentsOf: path.utf8)
@@ -895,6 +943,9 @@ public struct MutationEngine: Sendable {
             var length = UInt64(data.count).bigEndian
             withUnsafeBytes(of: &length) { content.append(contentsOf: $0) }
             content.append(contentsOf: fileDigest.utf8)
+            if (index + 1).isMultiple(of: 250) || index + 1 == orderedInputs.count {
+                mutationLog("Hashed project inputs: \(index + 1)/\(orderedInputs.count) files.")
+            }
         }
         content.append(configData)
         for argument in xcodebuildArguments {
@@ -914,10 +965,10 @@ public struct MutationEngine: Sendable {
     }
 
     private func makeSandbox(from source: URL, into parent: URL, excluding excludedPaths: [URL]) throws -> URL {
+        let sourcePath = source.standardizedFileURL.path.hasSuffix("/") ? source.standardizedFileURL.path : source.standardizedFileURL.path + "/"
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         let sandbox = parent.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: sandbox, withIntermediateDirectories: true)
-        let sourcePath = source.standardizedFileURL.path.hasSuffix("/") ? source.standardizedFileURL.path : source.standardizedFileURL.path + "/"
         let excludedRelativePaths = excludedPaths.compactMap { path -> String? in
             let absolute = path.standardizedFileURL.path
             return absolute.hasPrefix(sourcePath) ? String(absolute.dropFirst(sourcePath.count)) : nil
@@ -926,7 +977,7 @@ public struct MutationEngine: Sendable {
         for case let file as URL in enumerator {
             let relative = relativePath(file, root: source)
             let isRunArtifact = excludedRelativePaths.contains { relative == $0 || relative.hasPrefix($0 + "/") }
-            if isRunArtifact || relative == ".git" || relative.hasPrefix(".git/") || relative == ".build" || relative.hasPrefix(".build/") || relative == ".swiftpm" || relative.hasPrefix(".swiftpm/") || relative == ".swift-mutation-testing" || relative.hasPrefix(".swift-mutation-testing/") || relative == "DerivedData" || relative.hasPrefix("DerivedData/") {
+            if isRunArtifact || ProjectFilePaths.isGenerated(relative) {
                 if (try? file.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { enumerator.skipDescendants() }
                 continue
             }

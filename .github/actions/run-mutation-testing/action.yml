@@ -225,7 +225,6 @@ runs:
         path: |
           ${{ github.workspace }}/${{ inputs.output-path }}/report.md
           ${{ github.workspace }}/${{ inputs.output-path }}/report.json
-          ${{ github.workspace }}/${{ inputs.output-path }}/stryker.json
         if-no-files-found: warn
     - name: Remove temporary mutation data
       if: always()
