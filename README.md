@@ -159,6 +159,8 @@ The tool first runs the selected tests on the original code. If they fail, it st
 
 By default, it mutates all discovered source files and runs all tests in the configured test target. `--source` limits which files are changed; it does not limit tests. Use `--test-file`, `--suite`, or `--test` to select fewer tests.
 
+Swift package dependencies are resolved from `Package.swift`. Local sibling packages are copied into the isolated sandbox with their relative paths preserved. Git dependencies use SwiftPM or Xcode resolution, including the manifest's version, exact version, tag, branch, or revision requirement. Source files and resources declared by package targets are copied with their package.
+
 Mutation types include changing comparisons, Boolean values, logical and arithmetic operators, conditions, ternary branches, and standalone calls. See [Operators](Docs/OPERATORS.md) for supported Swift syntax and limits.
 
 ## What affects run time and cache reuse?

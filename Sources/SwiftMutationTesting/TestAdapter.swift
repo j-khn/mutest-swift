@@ -209,9 +209,13 @@ public struct NativeTestAdapter: Sendable {
         case .swiftPackage:
             let args: [String]
             switch phase {
+            case .resolveDependencies: args = ["package", "resolve"]
             case .testWithoutBuilding: args = ["test", "--skip-build"]
             case .buildForTesting: args = ["build", "--build-tests"]
             case .baseline: args = ["test"]
+            }
+            if phase == .resolveDependencies {
+                return .init(executable: "/usr/bin/swift", arguments: args, workingDirectory: root, environment: environment, timeout: timeout, outputFile: output)
             }
             var finalArgs = args
             if phase == .testWithoutBuilding, let scratchPath {
@@ -229,11 +233,20 @@ public struct NativeTestAdapter: Sendable {
             let projectPath = root.appendingPathComponent(project.path).path
             let action: String
             switch phase {
+            case .resolveDependencies: action = "-resolvePackageDependencies"
             case .testWithoutBuilding: action = "test-without-building"
             case .buildForTesting: action = "build-for-testing"
             case .baseline: action = "test"
             }
             var args = ["xcodebuild", action]
+            if phase == .resolveDependencies {
+                args += project.kind == .xcodeWorkspace ? ["-workspace", projectPath] : ["-project", projectPath]
+                args += ["-scheme", scheme]
+                if let derivedDataPath = xcodeContext?.derivedDataPath {
+                    args += ["-clonedSourcePackagesDirPath", derivedDataPath.appendingPathComponent("SourcePackages", isDirectory: true).path]
+                }
+                return .init(executable: "/usr/bin/xcrun", arguments: args, workingDirectory: root, environment: environment, timeout: timeout, outputFile: output)
+            }
             let destination = xcodeContext?.destination ?? project.destination
             if phase == .testWithoutBuilding, let manifest = xcodeContext?.testRunFile {
                 args += ["-xctestrun", manifest.path]
@@ -276,4 +289,4 @@ public struct NativeTestAdapter: Sendable {
     }
 }
 
-public enum TestPhase: Sendable, Equatable { case baseline, buildForTesting, testWithoutBuilding }
+public enum TestPhase: Sendable, Equatable { case resolveDependencies, baseline, buildForTesting, testWithoutBuilding }

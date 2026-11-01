@@ -17,6 +17,7 @@ public enum MutationEngineError: Error, CustomStringConvertible {
     case invalidProject(String)
     case baselineFailed(log: URL, timedOut: Bool)
     case baselineRanNoTests(log: URL)
+    case dependencyResolutionFailed(log: URL, timedOut: Bool)
     case noSourceFiles(String)
     case invalidSelection(String)
     public var description: String {
@@ -24,6 +25,7 @@ public enum MutationEngineError: Error, CustomStringConvertible {
         case .invalidProject(let message), .noSourceFiles(let message), .invalidSelection(let message): return message
         case .baselineFailed(let log, let timedOut): return "Baseline tests \(timedOut ? "timed out" : "failed"); no mutation score was produced. Log: \(log.path)"
         case .baselineRanNoTests(let log): return "Baseline command succeeded but ran zero tests; no mutation score was produced. Check test selectors and log: \(log.path)"
+        case .dependencyResolutionFailed(let log, let timedOut): return "Package dependency resolution \(timedOut ? "timed out" : "failed"); no mutation score was produced. Log: \(log.path)"
         }
     }
 }
@@ -215,21 +217,33 @@ public struct MutationEngine: Sendable {
             mutationLog("Resolving Xcode simulator destination…")
         }
         let simulatorTemplate = configuration.project.kind == .swiftPackage ? nil : try XcodeSimulatorTemplate.load(destination: configuration.project.destination, logs: logs)
+        mutationLog("Discovering package dependencies…")
+        let dependencyDiscoveryStarted = Date()
+        let dependencyGraph = try PackageDependencyResolver.discover(
+            projectURL: projectURL,
+            projectRoot: root,
+            kind: configuration.project.kind,
+            logs: logs,
+            timeout: TimeInterval(configuration.timeouts.buildSeconds)
+        )
+        mutationLog("Dependency manifests inspected in \(String(format: "%.1f", Date().timeIntervalSince(dependencyDiscoveryStarted)))s.")
         let sandboxCopyStarted = Date()
         mutationLog("Creating isolated project sandbox…")
-        let sandbox = try makeSandbox(
+        let sandboxLayout = try makeSandbox(
             from: root,
+            localPackageRoots: dependencyGraph.localPackages,
             into: output.appendingPathComponent("sandboxes", isDirectory: true),
             excluding: [output] + (cacheDirectory.map { [$0] } ?? [])
         )
+        let sandbox = sandboxLayout.root
         timings.sandboxCopySeconds = Date().timeIntervalSince(sandboxCopyStarted)
         mutationLog("Project sandbox ready in \(String(format: "%.1f", timings.sandboxCopySeconds))s.")
-        var auxiliarySandboxes: [URL] = []
+        var auxiliarySandboxContainers: [URL] = []
         var sandboxRemoved = false
         defer {
             if !sandboxRemoved {
-                auxiliarySandboxes.forEach { try? FileManager.default.removeItem(at: $0) }
-                try? FileManager.default.removeItem(at: sandbox)
+                auxiliarySandboxContainers.forEach { try? FileManager.default.removeItem(at: $0) }
+                try? FileManager.default.removeItem(at: sandboxLayout.container)
             }
         }
         let testDiscoveryStarted = Date()
@@ -244,6 +258,27 @@ public struct MutationEngine: Sendable {
         mutationLog("Test discovery complete: \(selection.identifiers.count) selected test identifiers\(selection.allTests ? " (full target)" : "").")
         let adapter = NativeTestAdapter(project: adapterProject, selection: configuration.tests, xcodebuildArguments: xcodebuildArguments)
         let runner = ProcessRunner()
+        mutationLog("Resolving package dependencies…")
+        let dependencyResolutionStarted = Date()
+        let dependencyLog = logs.appendingPathComponent("dependency-resolution.log")
+        let dependencyDerivedData = sandbox.appendingPathComponent(".swift-mutation-testing/DerivedData", isDirectory: true)
+        let dependencyCommand = try adapter.command(
+            root: sandbox,
+            phase: .resolveDependencies,
+            resolved: selection,
+            environment: [:],
+            timeout: TimeInterval(configuration.timeouts.buildSeconds),
+            output: dependencyLog,
+            xcodeContext: configuration.project.kind == .swiftPackage ? nil : .init(
+                destination: configuration.project.destination ?? "",
+                derivedDataPath: dependencyDerivedData
+            )
+        )
+        let dependencyResult = try runner.run(dependencyCommand)
+        guard !dependencyResult.timedOut, dependencyResult.exitCode == 0 else {
+            throw MutationEngineError.dependencyResolutionFailed(log: dependencyLog, timedOut: dependencyResult.timedOut)
+        }
+        mutationLog("Package dependencies resolved in \(String(format: "%.1f", Date().timeIntervalSince(dependencyResolutionStarted)))s.")
         let baselineLog = logs.appendingPathComponent("baseline.log")
         var baselineValidated = false
         var mutationPhaseStarted: Date?
@@ -285,7 +320,9 @@ public struct MutationEngine: Sendable {
         digestConfiguration.output = .init()
         let journalDirectory = cacheDirectory ?? output
         let inputHashStarted = Date()
-        let inputDigest = try digestInputs(root: root, files: sourceFiles, configuration: digestConfiguration, xcodebuildArguments: xcodebuildArguments, excluding: [output, journalDirectory], runtimeFingerprint: simulatorTemplate?.fingerprint ?? "")
+        let dependencyInputs = packageDependencyInputFiles(graph: dependencyGraph, projectRoot: root)
+            + resolvedDependencyInputFiles(in: sandboxLayout)
+        let inputDigest = try digestInputs(root: root, files: sourceFiles, configuration: digestConfiguration, xcodebuildArguments: xcodebuildArguments, excluding: [output, journalDirectory], runtimeFingerprint: simulatorTemplate?.fingerprint ?? "", additionalFiles: dependencyInputs)
         timings.inputHashSeconds = Date().timeIntervalSince(inputHashStarted)
         let journal = journalDirectory.appendingPathComponent("journal.jsonl")
         let cached = configuration.cache.enabled ? loadJournal(at: journal) : []
@@ -335,7 +372,7 @@ public struct MutationEngine: Sendable {
             let lockedJournal = configuration.cache.enabled ? LockedJournal(url: journal) : nil
             let executor = XcodeMutationExecutor(configuration: configuration, adapter: adapter, selection: selection,
                 sandbox: sandbox, output: output, sources: sources,
-                createSandbox: { try self.makeSandbox(from: sandbox, into: output.appendingPathComponent("sandboxes/isolated-workers"), excluding: []) },
+                createSandbox: { try self.makeSandbox(from: sandbox, localPackageRoots: sandboxLayout.localPackages, into: output.appendingPathComponent("sandboxes/isolated-workers"), excluding: []) },
                 onVerdict: { record, warnings in
                     try lockedJournal?.append(.init(cacheKey: inputDigest + ":" + record.id, record: record, warnings: warnings))
                 }, onCompletion: { candidate, status in progress.recordCompletion(candidate: candidate, status: status) })
@@ -596,6 +633,7 @@ public struct MutationEngine: Sendable {
                     for _ in 0..<workerCount {
                         let worker = try makeSandbox(
                             from: sandbox,
+                            localPackageRoots: sandboxLayout.localPackages,
                             into: output.appendingPathComponent("sandboxes/isolated-workers", isDirectory: true),
                             excluding: []
                         )
@@ -606,10 +644,10 @@ public struct MutationEngine: Sendable {
                         for sourceFile in sourceFiles {
                             let relative = relativePath(sourceFile, root: root)
                             let clean = try String(contentsOf: sourceFile, encoding: .utf8)
-                            try clean.write(to: worker.appendingPathComponent(relative), atomically: true, encoding: .utf8)
+                            try clean.write(to: worker.root.appendingPathComponent(relative), atomically: true, encoding: .utf8)
                         }
-                        workerRoots.append(worker)
-                        auxiliarySandboxes.append(worker)
+                        workerRoots.append(worker.root)
+                        auxiliarySandboxContainers.append(worker.container)
                     }
                     timings.sandboxCopySeconds += Date().timeIntervalSince(workerCopyStarted)
                 } else {
@@ -729,8 +767,8 @@ public struct MutationEngine: Sendable {
             baselineScopeMatches: baselineScopeMatches
         )
         let cleanupStarted = Date()
-        auxiliarySandboxes.forEach { try? FileManager.default.removeItem(at: $0) }
-        try? FileManager.default.removeItem(at: sandbox)
+        auxiliarySandboxContainers.forEach { try? FileManager.default.removeItem(at: $0) }
+        try? FileManager.default.removeItem(at: sandboxLayout.container)
         sandboxRemoved = true
         timings.cleanupSeconds += Date().timeIntervalSince(cleanupStarted)
         let report = MutationReport(scope: .init(sources: selectedSources, tests: selection.identifiers, allTests: selection.allTests), mutants: orderedRecords, integrityWarnings: warnings, qualityGate: gate, timings: timings)
@@ -899,7 +937,7 @@ public struct MutationEngine: Sendable {
         return String(filePath.dropFirst(prefix.count))
     }
 
-    private func digestInputs(root: URL, files: [URL], configuration: RunConfiguration, xcodebuildArguments: [String], excluding excludedPaths: [URL], runtimeFingerprint: String = "") throws -> String {
+    private func digestInputs(root: URL, files: [URL], configuration: RunConfiguration, xcodebuildArguments: [String], excluding excludedPaths: [URL], runtimeFingerprint: String = "", additionalFiles: [(String, URL)] = []) throws -> String {
         var inputs: [String: URL] = [:]
         let rootPath = root.standardizedFileURL.path.hasSuffix("/") ? root.standardizedFileURL.path : root.standardizedFileURL.path + "/"
         let excludedRelativePaths = excludedPaths.compactMap { path -> String? in
@@ -921,6 +959,9 @@ public struct MutationEngine: Sendable {
         // Explicit source selections may include paths outside conventional project enumeration
         // layouts. Add them even if the enumerator filtered or skipped an unusual file type.
         for file in files { inputs[relativePath(file, root: root)] = file }
+        for (stablePath, file) in additionalFiles where FileManager.default.fileExists(atPath: file.path) {
+            inputs[stablePath] = file
+        }
         let configurationEncoder = JSONEncoder()
         configurationEncoder.outputFormatting = [.sortedKeys]
         let configData = try configurationEncoder.encode(configuration)
@@ -960,16 +1001,91 @@ public struct MutationEngine: Sendable {
         return SHA256Digest.hash(content)
     }
 
-    private func makeSandbox(from source: URL, into parent: URL, excluding excludedPaths: [URL]) throws -> URL {
-        let sourcePath = source.standardizedFileURL.path.hasSuffix("/") ? source.standardizedFileURL.path : source.standardizedFileURL.path + "/"
+    private func packageDependencyInputFiles(graph: PackageDependencyGraph, projectRoot: URL) -> [(String, URL)] {
+        var result: [(String, URL)] = []
+        let manager = FileManager.default
+        for package in graph.localPackages where !isWithin(package, root: projectRoot) {
+            guard let enumerator = manager.enumerator(at: package, includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey]) else { continue }
+            for case let file as URL in enumerator {
+                let relative = relativePath(file, root: package)
+                if ProjectFilePaths.isGenerated(relative) {
+                    if (try? file.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { enumerator.skipDescendants() }
+                    continue
+                }
+                guard (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                let packagePath = PackageDependencyResolver.relativePath(package, to: graph.commonRoot)
+                let stablePath = "@local-package/\(packagePath)/\(relative)"
+                result.append((stablePath, file))
+            }
+        }
+        return result
+    }
+
+    private func resolvedDependencyInputFiles(in sandbox: ProjectSandbox) -> [(String, URL)] {
+        var result: [(String, URL)] = []
+        var visited = Set<String>()
+        let generated = Set([".git", ".build", ".swift-mutation-testing", "DerivedData"])
+        for root in [sandbox.root] + sandbox.localPackages {
+            guard visited.insert(root.path).inserted,
+                  let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey]) else { continue }
+            for case let file as URL in enumerator {
+                let relative = relativePath(file, root: root)
+                if relative.split(separator: "/").contains(where: { generated.contains(String($0)) }) {
+                    if (try? file.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { enumerator.skipDescendants() }
+                    continue
+                }
+                guard file.lastPathComponent == "Package.resolved",
+                      (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                let stagedPath = PackageDependencyResolver.relativePath(file, to: sandbox.container)
+                result.append(("@resolved/\(stagedPath)", file))
+            }
+        }
+        return result
+    }
+
+    private func makeSandbox(from source: URL, localPackageRoots: [URL], into parent: URL,
+                             excluding excludedPaths: [URL]) throws -> ProjectSandbox {
+        let source = source.standardizedFileURL
+        let packages = Array(Set(localPackageRoots.map { $0.standardizedFileURL })).sorted { $0.path < $1.path }
+        let hasExternalPackages = packages.contains { !isWithin($0, root: source) }
+        let referenceRoot = hasExternalPackages ? commonAncestor(of: [source] + packages) : source
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        let sandbox = parent.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: sandbox, withIntermediateDirectories: true)
+        let container = parent.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        do {
+            let copyCandidates = [source] + packages
+            let ordered = copyCandidates.sorted { $0.pathComponents.count < $1.pathComponents.count }
+            var copyRoots: [URL] = []
+            for candidate in ordered where !copyRoots.contains(where: { isWithin(candidate, root: $0) }) {
+                copyRoots.append(candidate)
+            }
+            for copyRoot in copyRoots {
+                let relative = PackageDependencyResolver.relativePath(copyRoot, to: referenceRoot)
+                let destination = relative.isEmpty ? container : container.appendingPathComponent(relative, isDirectory: true)
+                try copyTree(from: copyRoot, to: destination, excluding: excludedPaths)
+            }
+            let projectRelative = PackageDependencyResolver.relativePath(source, to: referenceRoot)
+            let stagedRoot = projectRelative.isEmpty ? container : container.appendingPathComponent(projectRelative, isDirectory: true)
+            let stagedPackages = packages.map { package in
+                let relative = PackageDependencyResolver.relativePath(package, to: referenceRoot)
+                return relative.isEmpty ? container : container.appendingPathComponent(relative, isDirectory: true)
+            }
+            return ProjectSandbox(container: container, root: stagedRoot, localPackages: stagedPackages)
+        } catch {
+            try? FileManager.default.removeItem(at: container)
+            throw error
+        }
+    }
+
+    private func copyTree(from source: URL, to destinationRoot: URL, excluding excludedPaths: [URL]) throws {
+        let source = source.standardizedFileURL
+        let sourcePath = source.path.hasSuffix("/") ? source.path : source.path + "/"
         let excludedRelativePaths = excludedPaths.compactMap { path -> String? in
             let absolute = path.standardizedFileURL.path
             return absolute.hasPrefix(sourcePath) ? String(absolute.dropFirst(sourcePath.count)) : nil
         }
-        guard let enumerator = FileManager.default.enumerator(at: source, includingPropertiesForKeys: [.isDirectoryKey]) else { return sandbox }
+        try FileManager.default.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
+        guard let enumerator = FileManager.default.enumerator(at: source, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]) else { return }
         for case let file as URL in enumerator {
             let relative = relativePath(file, root: source)
             let isRunArtifact = excludedRelativePaths.contains { relative == $0 || relative.hasPrefix($0 + "/") }
@@ -977,7 +1093,7 @@ public struct MutationEngine: Sendable {
                 if (try? file.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { enumerator.skipDescendants() }
                 continue
             }
-            let destination = sandbox.appendingPathComponent(relative)
+            let destination = destinationRoot.appendingPathComponent(relative)
             let values = try file.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
             if values.isDirectory == true { try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true) }
             else {
@@ -986,7 +1102,24 @@ public struct MutationEngine: Sendable {
                 else { try cloneFileOrCopy(from: file, to: destination) }
             }
         }
-        return sandbox
+    }
+
+    private func isWithin(_ path: URL, root: URL) -> Bool {
+        let base = root.standardizedFileURL.path
+        let candidate = path.standardizedFileURL.path
+        return candidate == base || candidate.hasPrefix(base.hasSuffix("/") ? base : base + "/")
+    }
+
+    private func commonAncestor(of urls: [URL]) -> URL {
+        let paths = urls.map { $0.standardizedFileURL.pathComponents }
+        guard var prefix = paths.first else { return URL(fileURLWithPath: "/", isDirectory: true) }
+        for path in paths.dropFirst() {
+            var count = 0
+            while count < min(prefix.count, path.count), prefix[count] == path[count] { count += 1 }
+            prefix = Array(prefix.prefix(count))
+        }
+        let path = prefix.first == "/" ? "/" + prefix.dropFirst().joined(separator: "/") : prefix.joined(separator: "/")
+        return URL(fileURLWithPath: path.isEmpty ? "/" : path, isDirectory: true).standardizedFileURL
     }
 
     private func cloneFileOrCopy(from source: URL, to destination: URL) throws {

@@ -96,6 +96,7 @@ final class XcodeSimulatorWorker: @unchecked Sendable {
     let directory: URL
     var artifacts: XcodeTestArtifacts?
     var isolatedRoot: URL?
+    var isolatedContainer: URL?
     init(number: Int, simulatorID: String, directory: URL) {
         self.number = number; self.simulatorID = simulatorID; self.directory = directory
     }

@@ -62,7 +62,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
     private let sandbox: URL
     private let output: URL
     private let sources: [String: String]
-    private let createSandbox: @Sendable () throws -> URL
+    private let createSandbox: @Sendable () throws -> ProjectSandbox
     private let onVerdict: @Sendable (MutantRecord, [IntegrityWarning]) throws -> Void
     private let onCompletion: @Sendable (MutationCandidate, MutantStatus) -> Void
     private let state = XcodeExecutionState()
@@ -72,7 +72,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
 
     init(configuration: RunConfiguration, adapter: NativeTestAdapter, selection: ResolvedTestSelection,
          sandbox: URL, output: URL, sources: [String: String],
-         createSandbox: @escaping @Sendable () throws -> URL,
+         createSandbox: @escaping @Sendable () throws -> ProjectSandbox,
          onVerdict: @escaping @Sendable (MutantRecord, [IntegrityWarning]) throws -> Void,
          onCompletion: @escaping @Sendable (MutationCandidate, MutantStatus) -> Void,
          commandRunner: @escaping XcodeCommandRunner = { try ProcessRunner().run($0) },
@@ -94,7 +94,12 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         // Xcode may finish writing result attachments after an attempt returns.
         // Sweep this campaign's bundles again after worker teardown to catch late files.
         defer { state.removeResultBundles() }
-        defer { for worker in pool.workers { if let root = worker.isolatedRoot { try? FileManager.default.removeItem(at: root) } } }
+        defer {
+            for worker in pool.workers {
+                if let container = worker.isolatedContainer { try? FileManager.default.removeItem(at: container) }
+                else if let root = worker.isolatedRoot { try? FileManager.default.removeItem(at: root) }
+            }
+        }
         defer { if !cleaned { for warning in pool.cleanup() { mutationLog(warning.message) } } }
         var timings = MutationTimings()
         let builderData = sandbox.appendingPathComponent(".swift-mutation-testing/DerivedData")
@@ -152,9 +157,10 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         if !isolatedCandidates.isEmpty {
             try restoreSources(in: sandbox)
             for worker in pool.workers {
-                let root = try createSandbox()
-                worker.isolatedRoot = root
-                try restoreSources(in: root)
+                let copy = try createSandbox()
+                worker.isolatedRoot = copy.root
+                worker.isolatedContainer = copy.container
+                try restoreSources(in: copy.root)
             }
             try executeBatch(sorted(isolatedCandidates), pool: pool, isolated: true)
         }
