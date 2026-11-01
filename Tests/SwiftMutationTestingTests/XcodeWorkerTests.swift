@@ -18,6 +18,8 @@ final class FakeSimulators: @unchecked Sendable {
         switch args.first {
         case "create":
             output = UUID().uuidString; devices[output] = args[1]
+        case "clone":
+            output = UUID().uuidString; devices[output] = args[2]
         case "list":
             let root = ["devices": ["runtime": devices.map { ["udid": $0.key, "name": $0.value] }]]
             output = String(data: try JSONSerialization.data(withJSONObject: root), encoding: .utf8)!
@@ -105,6 +107,30 @@ struct XcodeWorkerTests {
         #expect(throws: MutationEngineError.self) { try pool.waitUntilReady() }
         #expect(pool.cleanup().isEmpty)
         #expect(fake.snapshot().devices.count == 1)
+    }
+
+    @Test("cloning a shut-down template never changes or deletes that template")
+    func cloneTemplate() throws {
+        var inventory = try inventory()
+        var device = try #require(inventory.devices[template.runtime]?.first)
+        device.state = "Shutdown"; inventory.devices[template.runtime] = [device]
+        let shutdown = try XcodeSimulatorTemplate.resolve(destination: "platform=iOS Simulator,id=new", inventory: inventory)
+        #expect(shutdown?.cloneSourceID == "new")
+        device.state = "Booted"; inventory.devices[template.runtime] = [device]
+        let booted = try XcodeSimulatorTemplate.resolve(destination: "platform=iOS Simulator,id=new", inventory: inventory)
+        #expect(booted?.cloneSourceID == nil)
+        #expect(shutdown?.fingerprint != booted?.fingerprint)
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let fake = FakeSimulators()
+        var configured = template
+        configured.cloneSourceID = "user-simulator"
+        let pool = try XcodeSimulatorPool(template: configured, count: 2, output: root, run: fake.run, teardownRun: fake.run)
+        _ = try pool.waitUntilReady()
+        #expect(pool.cleanup().isEmpty)
+        let result = fake.snapshot()
+        #expect(result.devices == ["user-simulator": "My Simulator"])
+        #expect(result.commands.filter { $0.first == "clone" }.count == 2)
+        #expect(!result.commands.contains { ["boot", "shutdown", "delete"].contains($0.first ?? "") && $0.dropFirst().contains("user-simulator") })
     }
 
     @Test("stopped test-host services do not force an unnecessary simulator reboot")

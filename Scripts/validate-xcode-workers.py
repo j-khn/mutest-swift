@@ -186,7 +186,7 @@ def main():
             results["speedup"] = medians[1] / medians[2]
             assert medians[2] < medians[1], f"Two workers did not improve median total time: {medians}"
     except BaseException as error:
-        results["error"] = str(error)
+        results["error"] = str(error) or type(error).__name__
         raise
     finally:
         (args.output / "validation.json").write_text(json.dumps(results, indent=2))

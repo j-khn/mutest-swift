@@ -18,6 +18,7 @@ struct SimulatorInventory: Decodable {
         var name: String
         var isAvailable: Bool?
         var deviceTypeIdentifier: String?
+        var state: String?
     }
     struct Runtime: Decodable {
         var identifier: String
@@ -36,7 +37,8 @@ struct XcodeSimulatorTemplate: Sendable {
     var runtime: String
     var runtimeVersion: String
     var runtimeBuild: String
-    var fingerprint: String { "\(deviceType)|\(runtime)|\(runtimeVersion)|\(runtimeBuild)" }
+    var cloneSourceID: String? = nil
+    var fingerprint: String { "\(deviceType)|\(runtime)|\(runtimeVersion)|\(runtimeBuild)|\(cloneSourceID == nil ? "fresh" : "clone")" }
 
     static func resolve(destination: String?, inventory: SimulatorInventory) throws -> Self? {
         guard let destination, !destination.isEmpty else {
@@ -70,7 +72,7 @@ struct XcodeSimulatorTemplate: Sendable {
         guard let type = device.deviceTypeIdentifier ?? inventory.devicetypes.first(where: { $0.name == device.name })?.identifier else {
             throw MutationEngineError.invalidProject("Cannot determine the device type for simulator '\(device.name)'.")
         }
-        return Self(deviceType: type, runtime: runtime.identifier, runtimeVersion: runtime.version, runtimeBuild: runtime.buildversion ?? "")
+        return Self(deviceType: type, runtime: runtime.identifier, runtimeVersion: runtime.version, runtimeBuild: runtime.buildversion ?? "", cloneSourceID: device.state == "Shutdown" ? device.udid : nil)
     }
 
     static func load(destination: String?, logs: URL) throws -> Self? {
@@ -148,7 +150,8 @@ final class XcodeSimulatorPool: @unchecked Sendable {
                 let name = "mutest-\(runID)-worker-\(number)"
                 ownership.devices.append(.init(name: name))
                 try Self.persist(ownership, in: directory)
-                let result = try Self.execute(["create", name, template.deviceType, template.runtime], logs: logs, timeout: 30, run: run)
+                let arguments = template.cloneSourceID.map { ["clone", $0, name] } ?? ["create", name, template.deviceType, template.runtime]
+                let result = try Self.execute(arguments, logs: logs, timeout: 60, run: run)
                 let id = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard result.exitCode == 0, !result.timedOut, UUID(uuidString: id) != nil else {
                     throw MutationEngineError.invalidProject("Could not create Xcode worker \(number). See \(result.outputFile.path)")

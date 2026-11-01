@@ -121,6 +121,8 @@ swift run swift-mutation-testing run \
 
 The tool creates two temporary simulators matching that destination, checks the baseline on each, and runs one mutant per worker. Each mutant uses all tests in `MyAppTests` unless you supply test selectors. Use `--parallelism 1` (or `parallelism: "1"` in the Action) for serial execution. Simulators are reused during the campaign and deleted afterward; the original simulator is used only as a template. Xcode workspaces use `--project-kind xcode-workspace`. Other destination platforms run serially and log the reason.
 
+A shut-down template is cloned to reuse its completed simulator setup. A booted template uses freshly created matching devices so its running state is preserved. Small campaigns can spend more time preparing simulators than they save through parallel testing; compare worker counts using the reported total time.
+
 ## Performance and cache
 
 - With no test selector, every run uses the full configured test target. `--source` limits mutation locations only.
