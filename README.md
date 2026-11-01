@@ -56,6 +56,8 @@ For an Xcode project or workspace, the tool asks which scheme, test target, and 
 
 `--source` limits which code is changed. If you do not provide test selectors, the tool runs the full configured test target.
 
+See [Operators](Docs/OPERATORS.md) for the mutation types, supported Swift syntax, and operator-tier policy.
+
 <details>
 <summary>CLI options</summary>
 
