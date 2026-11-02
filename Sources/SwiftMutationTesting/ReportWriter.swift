@@ -149,9 +149,14 @@ public enum MutationReportWriter {
     private static func appendTestsByMutatedFile(_ report: MutationReport, runDetails: MutationRunSummaryDetails, to output: inout String) {
         guard !runDetails.mutantTestRuns.isEmpty else { return }
         let runsBySource = Dictionary(grouping: runDetails.mutantTestRuns, by: \.source)
+        let includesObservedFilePaths = runDetails.mutantTestRuns.contains { run in
+            run.testCases?.contains { $0.testFile != nil } == true
+        }
         output += "\n### Unit tests by mutated file\n\n"
-        output += "| Mutated file | Mutants run | Test runs | Unit test executions reported | Unique unit tests observed | Test files observed |\n"
-        output += "|---|---:|---:|---:|---:|---:|\n"
+        output += includesObservedFilePaths
+            ? "| Mutated file | Mutants run | Test runs | Unit test executions reported | Unique unit tests observed | Test files observed |\n"
+            : "| Mutated file | Mutants run | Test runs | Unit test executions reported | Unique unit tests observed |\n"
+        output += includesObservedFilePaths ? "|---|---:|---:|---:|---:|---:|\n" : "|---|---:|---:|---:|---:|\n"
 
         for source in report.scope.sources.sorted() {
             let runs = runsBySource[source, default: []]
@@ -160,9 +165,11 @@ public enum MutationReportWriter {
             let unknownCount = runs.count - reportedCounts.count
             let testCount = reportedCounts.reduce(0, +)
             let testCases = uniqueTestCases(in: runs)
-            let testFiles = Set(testCases.compactMap(\.testFile)).count
+            let testFiles = Set(testCases.compactMap { $0.testFile }).count
             let testCountLabel = unknownCount == 0 ? String(testCount) : "\(testCount) (+\(unknownCount) unreported)"
-            output += "| `\(markdownCell(source))` | \(mutantCount) | \(runs.count) | \(testCountLabel) | \(testCases.count) | \(testFiles) |\n"
+            output += "| `\(markdownCell(source))` | \(mutantCount) | \(runs.count) | \(testCountLabel) | \(testCases.count)"
+            if includesObservedFilePaths { output += " | \(testFiles)" }
+            output += " |\n"
         }
         output += "\n"
 

@@ -67,6 +67,11 @@ For an Xcode project or workspace, the tool asks which scheme, test scope, and s
 | `--scheme NAME` | Xcode scheme | Selects an Xcode scheme. Asked interactively if missing. |
 | `--test-target NAME` | Xcode test target; repeatable | Runs every test in each named target. |
 | `--test-package-root PATH` | Local Swift package folder; repeatable | Maps test files from a package that is part of the selected Xcode scheme. The launcher detects this automatically when you select a package scheme. |
+| `--source-commit COMMIT` | Commit or ref currently checked out | Turns on commit-based selection. Defaults to changed production files and changed plus matching tests. |
+| `--source-base COMMIT` | Commit or ref; defaults to the source commit's parent | Compares a commit range, such as all commits since the last nightly. |
+| `--source-scope` | `changed` (commit mode default) or `all` | Mutates only production Swift files changed in the commit range, or all source files. |
+| `--test-scope` | `changed`, `matching`, `changed-and-matching` (commit mode default), or `all` | Chooses changed test files, filename-matched tests, both, or the full test plan. |
+| `--test-file-suffix SUFFIX` | `Tests.swift` by default; repeatable | Looks for files such as `FooTests.swift` when changed source is `Foo.swift`. |
 | `--destination-simulator VALUE` | Xcode simulator destination string | Chooses the simulator. Asked interactively if missing. |
 | `--workers COUNT` | Positive number; default `2` | Runs up to this many mutants at once. |
 | `--mutation-source PATH` | Swift production source file or folder; repeatable | Limits where mutations are made. No value means all discovered source files. |
@@ -88,6 +93,8 @@ Each `--test-target` adds **all tests in that target**. Each file, suite, or nam
 
 When test files belong to a local Swift package inside an Xcode project, `./run` passes the selected package to test discovery automatically. For a direct CLI command, add `--test-package-root /path/to/the/package` so the tool can map its test files to their Swift package test target.
 
+Commit mode compares the checked-out commit with `--source-base` (or its first parent). A changed `Foo.swift` matches a tracked `FooTests.swift` anywhere in the project. Changed test files are also included by default. Use `--test-scope all` to keep the full test plan for ripple checks. Do not pass `--test-target` when you want only selected files; a target always adds every test in that target.
+
 Examples:
 
 ```sh
@@ -95,6 +102,7 @@ Examples:
 ./run /path/to/MyApp.xcodeproj --scheme MyApp --test-target MyAppTests --destination-simulator 'platform=iOS Simulator,name=iPhone 17,OS=latest' --workers 2
 ./run /path/to/MyApp.xcodeproj --mutation-source Sources/Checkout/A.swift --mutation-source Sources/Checkout/B.swift --test-file CheckoutATests.swift --test-file CheckoutBTests.swift
 ./run /path/to/MyApp.xcodeproj --scheme MyApp --test-target TargetA --test-target TargetB --test-file CTests.swift --test-suite 'TargetETests::Suite1' --test-name 'TargetDTests::testABC' --destination-simulator 'platform=iOS Simulator,name=iPhone 17,OS=latest'
+./run /path/to/MyApp.xcodeproj --scheme MyApp --source-commit HEAD --source-base main --test-file-suffix Tests.swift
 ```
 
 The last command runs all tests in A and B, every test in `CTests.swift`, all tests in `Suite1` from E, and the one named test from D. Xcode builds the selected scheme's test products; test runs use only this combined selection. Replace the sample target and selector names with names from your scheme.
@@ -103,7 +111,7 @@ The last command runs all tests in A and B, every test in `CTests.swift`, all te
 
 ### 2. Run with GitHub Actions
 
-GitHub reads workflow files from `.github/workflows/`, so create your workflow there. The example below runs on pushes and pull requests to `main`; change the branch name if your repository uses another one. Without test selectors or target inputs, it runs every test target in the scheme's test plan.
+GitHub reads workflow files from `.github/workflows/`, so create your workflow there. This complete example runs on pushes and pull requests to `main`, and nightly every day. Pushes and pull requests use the event's base commit. Nightly runs select commits from the previous 24 hours; the first nightly uses that same window. Change `main` and the Xcode settings to match your project.
 
 <small><em>Note: `mutest-swift` is private for now. You need permission to clone it and to let your repository use its GitHub Action. Grant Action access in `mutest-swift` → Settings → Actions → General → Access. <a href="https://docs.github.com/en/actions/how-tos/reuse-automations/share-across-private-repositories">GitHub explains this setting</a>.</em></small>
 
@@ -117,15 +125,54 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: '0 2 * * *'
   workflow_dispatch:
+    inputs:
+      source_base:
+        description: Optional base commit; blank compares with the previous commit
+        type: string
+        required: false
+      source_scope:
+        description: Mutate changed Swift files or all source files
+        type: choice
+        options: [changed, all]
+        default: changed
+      test_scope:
+        description: Run changed tests, filename matches, both, or the full test plan
+        type: choice
+        options: [changed-and-matching, changed, matching, all]
+        default: changed-and-matching
+
+permissions:
+  contents: read
 
 jobs:
   mutation-testing:
-    runs-on: macos-latest
+    runs-on: [self-hosted, macos]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Check Xcode
         run: xcodebuild -version
+      - name: Choose the comparison base
+        id: range
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BASE: ${{ github.event.before || '' }}
+          PR_BASE: ${{ github.event.pull_request.base.sha || '' }}
+          MANUAL_BASE: ${{ inputs.source_base || '' }}
+        run: |
+          set -euo pipefail
+          base="$MANUAL_BASE"
+          if [[ -z "$base" && "$EVENT_NAME" == "push" ]]; then base="$PUSH_BASE"; fi
+          if [[ -z "$base" && "$EVENT_NAME" == "pull_request" ]]; then base="$PR_BASE"; fi
+          if [[ -z "$base" && "$EVENT_NAME" == "schedule" ]]; then
+            base="$(git rev-list --max-count=1 --before='24 hours ago' "$GITHUB_SHA" || true)"
+            if [[ -z "$base" ]]; then base="$(git hash-object -t tree /dev/null)"; fi
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
       - name: Run mutation tests
         uses: j-khn/mutest-swift/.github/actions/run-mutation-testing@main
         with:
@@ -133,15 +180,16 @@ jobs:
           project-kind: xcode-project
           scheme: MyApp
           destination-simulator: platform=iOS Simulator,name=iPhone 17,OS=latest
-          test-target: |
-            ShareUnitTests
-          test-file: |
-            ShareContacts/Tests/ContactTests.swift
-          test-name: |
-            ShareUITests::testRefresh
+          source-commit: ${{ github.sha }}
+          source-base: ${{ steps.range.outputs.base }}
+          source-scope: ${{ inputs.source_scope }}
+          test-scope: ${{ inputs.test_scope }}
+          workers: "2"
 ```
 
-Replace `MyApp` and the simulator name with values from your project and runner. For a Swift package, use `project: .` and `project-kind: swift-package`; omit `scheme`, `test-target`, and `destination-simulator`. The Action builds the tool, runs the tests, adds the Markdown report to the workflow summary, and uploads the reports.
+Replace `MyApp` and the simulator name with values from your project and runner. For a Swift package, use `project: .` and `project-kind: swift-package`; omit `scheme` and `destination-simulator`. The `uses:` line calls the reusable action in this repository. It builds or reuses the CLI, runs the selected scope, adds the Markdown report to the workflow summary, and uploads the reports. You can replace it with direct CLI commands, but then your workflow must do those steps itself.
+
+The runner needs Xcode and the selected iOS Simulator runtime installed. Change `[self-hosted, macos]` if your runner uses different labels.
 
 <details>
 <summary>GitHub Action inputs</summary>
@@ -153,6 +201,10 @@ Replace `MyApp` and the simulator name with values from your project and runner.
 | `scheme`, `destination-simulator` | Required for Xcode projects | Xcode scheme and simulator destination; match `--scheme` and `--destination-simulator`. |
 | `test-target` | One Xcode test target per line; optional | Runs every test in each listed target. Omit it to use the scheme's full test plan when there are no selectors. |
 | `test-package-root` | One package path per line; optional | Maps test files from local Swift packages not listed directly in the Xcode project. Relative to the project root. |
+| `source-commit`, `source-base` | Commit SHA or ref; base optional | Selects a commit or commit range. `source-commit` must match the checked-out commit; blank `source-base` uses its first parent. |
+| `source-scope` | `changed` or `all`; commit mode defaults to `changed` | Chooses changed production Swift files or all source files. |
+| `test-scope` | `changed`, `matching`, `changed-and-matching`, or `all`; commit mode defaults to `changed-and-matching` | Chooses changed test files, `<SourceName>Tests.swift` matches, both, or the full test plan. |
+| `test-file-suffix` | One suffix per line; default `Tests.swift` | Changes the filename rule used for matching tests to source files. |
 | `mutation-source` | One relative path per line; blank means all discovered source | Limits mutation locations; matches repeatable `--mutation-source`. |
 | `test-file`, `test-suite`, `test-name` | One selector per line; blank means no filter | Adds matching tests from any target included in the chosen scheme. Selectors combine with target-wide selections; you do not need to name their targets separately. |
 | `operators` | Comma-separated operator names; blank means all available | Limits mutation types; matches `--operators`. |

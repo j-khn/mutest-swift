@@ -47,4 +47,27 @@ struct ReportWriterTests {
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("stryker.json").path))
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("report.md").path))
     }
+
+    @Test("does not report zero observed test files when Xcode omits test file paths")
+    func hidesUnavailableTestFileCounts() {
+        let source = "Sources/Example.swift"
+        let report = MutationReport(
+            scope: .init(sources: [source], tests: ["FixtureTests/ExampleTests/testRule()"], allTests: false),
+            mutants: [MutantRecord(id: "mutant", operatorID: .boolean, source: source, line: 2, original: "true", replacement: "false", status: .killed)]
+        )
+        let details = MutationRunSummaryDetails(
+            mutantTestRuns: [MutantTestRunDetails(
+                mutantId: "mutant",
+                source: source,
+                reportedCaseCount: 1,
+                testCases: [MutationTestCaseDetails(identifier: "FixtureTests/ExampleTests/testRule()", name: "testRule", testFile: nil, lineNumber: nil, result: "passed")]
+            )]
+        )
+
+        let markdown = MutationReportWriter.markdown(report, runDetails: details)
+
+        #expect(markdown.contains("Unique unit tests observed"))
+        #expect(!markdown.contains("Test files observed"))
+        #expect(markdown.contains("| `Sources/Example.swift` | 1 | 1 | 1 | 1 |"))
+    }
 }

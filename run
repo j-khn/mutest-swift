@@ -57,6 +57,7 @@ Examples:
     )
     test_group.add_argument("--test-file", dest="test_files", action="append", default=[], metavar="PATH", help="file containing tests; repeat once per file")
     test_group.add_argument("--test-package-root", dest="test_package_roots", action="append", default=[], metavar="PATH", help="local Swift package containing selected test files; repeat for more packages")
+    test_group.add_argument("--test-file-suffix", action="append", default=[], metavar="SUFFIX", help="suffix appended to a changed source name to find tests (default: Tests.swift)")
     test_group.add_argument("--target-file", dest="test_files", action="append", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     test_group.add_argument("--test-suite", dest="suite", action="append", default=[], metavar="NAME", help="suite grouping name or @Suite display name; repeat once per suite")
     test_group.add_argument("--suite", dest="suite", action="append", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
@@ -65,6 +66,10 @@ Examples:
         test_group.add_argument(alias, dest="tests", action="append", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
 
     options_group = result.add_argument_group("Other options")
+    options_group.add_argument("--source-commit", metavar="COMMIT", help="commit or ref to analyze; defaults to changed sources and changed/matching tests")
+    options_group.add_argument("--source-base", metavar="COMMIT", help="base commit or ref; defaults to the source commit's parent")
+    options_group.add_argument("--source-scope", choices=("all", "changed"), help="mutation files; default with --source-commit: changed")
+    options_group.add_argument("--test-scope", choices=("all", "changed", "matching", "changed-and-matching"), help="unit tests; default with --source-commit: changed-and-matching")
     options_group.add_argument("--operators", help="comma-separated operators")
     options_group.add_argument("--operator-tier", default="experimental", choices=("experimental", "all"), help="operator tier (default: experimental)")
     options_group.add_argument("--xcodebuild-arg", action="append", default=[], help="Xcode build setting NAME=VALUE; repeatable")
@@ -344,6 +349,16 @@ def common_arguments(args: argparse.Namespace, include_xcodebuild_args: bool = T
     for option, values in selectors:
         for value in values:
             command += [option, value]
+    for option, value in (
+        ("--source-commit", args.source_commit),
+        ("--source-base", args.source_base),
+        ("--source-scope", args.source_scope),
+        ("--test-scope", args.test_scope),
+    ):
+        if value:
+            command += [option, value]
+    for suffix in args.test_file_suffix:
+        command += ["--test-file-suffix", suffix]
     if args.operators:
         command += ["--operators", args.operators]
     if args.no_cache:
@@ -418,7 +433,10 @@ def run(args: argparse.Namespace) -> int:
             output = args.output
         else:
             output = None
-        print("Test scope: full configured package" if not (args.test_files or args.suite or args.tests) else "Test scope: selected tests", flush=True)
+        if args.source_commit and args.test_scope != "all":
+            print("Test scope: changed and matching tests from the commit range" if not args.test_scope else f"Test scope: {args.test_scope} tests from the commit range", flush=True)
+        else:
+            print("Test scope: full configured package" if not (args.test_files or args.suite or args.tests) else "Test scope: selected tests", flush=True)
         print("Mutation scope: all discovered source files" if not args.source else f"Mutation scope: {', '.join(args.source)}", flush=True)
         return execute_task(task, args, None, output)
 
@@ -450,13 +468,15 @@ def run(args: argparse.Namespace) -> int:
             f"Test target(s) {', '.join(repr(target) for target in unknown_targets)} are not in scheme '{selected_scheme}'. "
             f"Choose from: {choices}."
         )
+    has_commit_scope = bool(args.source_commit)
     has_test_selectors = bool(args.test_files or args.suite or args.tests)
+    commit_selects_tests = has_commit_scope and args.test_scope != "all"
     if not selected_targets:
         if has_test_selectors:
             choices = ["No full test targets", *choices_for_scheme]
             selected_scope = ask_multiple_choices("Which full test target(s), if any, should be added?", choices)
             selected_targets = [target for target in selected_scope if target != choices[0]]
-        elif choices_for_scheme:
+        elif choices_for_scheme and not has_commit_scope:
             choices = ["All test targets in scheme", *choices_for_scheme]
             selected_scope = ask_multiple_choices("Which test target(s) do you want to run?", choices)
             selected_targets = [] if choices[0] in selected_scope else selected_scope
@@ -466,6 +486,8 @@ def run(args: argparse.Namespace) -> int:
         task["name"] = f"{selected_scheme} / {', '.join(selected_targets)}"
     elif has_test_selectors:
         task["name"] = f"{selected_scheme} / selected tests"
+    elif commit_selects_tests:
+        task["name"] = f"{selected_scheme} / commit-selected tests"
     else:
         task["name"] = f"{selected_scheme} / all test targets"
     if package:
@@ -486,6 +508,8 @@ def run(args: argparse.Namespace) -> int:
             print(f"Test scope: selected tests plus all tests in {', '.join(selected_targets)}", flush=True)
         elif has_test_selectors:
             print("Test scope: selected files, suites, and tests only", flush=True)
+        elif commit_selects_tests:
+            print(f"Test scope: {args.test_scope or 'changed-and-matching'} files from the commit range", flush=True)
         elif selected_targets:
             print(f"Test scope: all tests in {', '.join(selected_targets)}", flush=True)
         else:
@@ -493,7 +517,6 @@ def run(args: argparse.Namespace) -> int:
 
     task = tasks[0]
     output = args.output
-    print("Test scope: full configured target" if not (args.test_files or args.suite or args.tests) else "Test scope: selected tests", flush=True)
     source_scope = args.source or ([task["source"]] if task.get("source") else [])
     print("Mutation scope: all discovered source files" if not source_scope else f"Mutation scope: {', '.join(source_scope)}", flush=True)
     return execute_task(task, args, destination, output)

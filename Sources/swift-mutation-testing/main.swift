@@ -29,14 +29,16 @@ enum SwiftMutationTestingCLI {
             if arguments.command == "help" || arguments.flags.contains("--help") || arguments.flags.contains("-h") { print(help); return }
             if arguments.command == "version" { print("mutest-swift 0.3.0"); return }
             if arguments.command == "validate" {
-                let configuration = try makeConfiguration(arguments)
+                var configuration = try makeConfiguration(arguments)
+                _ = try applyCommitScope(arguments, to: &configuration)
                 _ = try xcodebuildArguments(arguments, projectKind: configuration.project.kind)
                 try validate(configuration)
                 print("Configuration valid. Project: \(configuration.project.kind.rawValue) at \(configuration.project.path)")
                 return
             }
             guard arguments.command == "run" else { throw CLIError.usage("Expected command 'run', 'validate', 'version', or 'help'.\n\n\(help)") }
-            let configuration = try makeConfiguration(arguments)
+            var configuration = try makeConfiguration(arguments)
+            if try applyCommitScope(arguments, to: &configuration) { return }
             let buildSettings = try xcodebuildArguments(arguments, projectKind: configuration.project.kind)
             let output = arguments.first("--output").map { URL(fileURLWithPath: $0, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL }
             let runStartedAt = Date()
@@ -68,6 +70,7 @@ enum SwiftMutationTestingCLI {
         let valueOptions: Set<String> = [
             "--config", "--project", "--project-kind", "--mutation-source", "--source", "--test-file", "--target-file",
             "--test-suite", "--suite", "--test-name", "--target-tests", "--test", "--scheme", "--test-target", "--target", "--test-package-root",
+            "--source-commit", "--source-base", "--source-scope", "--test-scope", "--test-file-suffix",
             "--destination", "--destination-simulator", "--xcodebuild-arg", "--operators", "--operator-tier", "--build-timeout",
             "--baseline-timeout", "--mutant-timeout", "--parallelism", "--workers", "--output", "--cache-path", "--minimum-score",
             "--maximum-score-drop", "--maximum-integrity-warnings", "--baseline-report"
@@ -161,6 +164,81 @@ enum SwiftMutationTestingCLI {
         return config
     }
 
+    /// Resolves Git commit paths before the engine starts. Commit-based selection is opt-in;
+    /// without --source-commit the existing full-scope defaults remain unchanged.
+    static func applyCommitScope(_ arguments: Arguments, to configuration: inout RunConfiguration) throws -> Bool {
+        let sourceCommit = arguments.first("--source-commit")
+        let sourceBase = arguments.first("--source-base")
+        let requestedSourceScope = arguments.first("--source-scope")
+        let requestedTestScope = arguments.first("--test-scope")
+        let suffixes = arguments.all("--test-file-suffix")
+
+        guard let sourceCommit, !sourceCommit.isEmpty else {
+            if sourceBase != nil || requestedSourceScope == "changed" || ["changed", "matching", "changed-and-matching"].contains(requestedTestScope ?? "") {
+                throw CLIError.usage("Commit-based scopes require --source-commit. Set it to the commit being tested.")
+            }
+            if let scope = requestedSourceScope, scope != "all" { throw CLIError.usage("--source-scope must be 'all' or 'changed'.") }
+            if let scope = requestedTestScope, scope != "all" { throw CLIError.usage("--test-scope must be all, changed, matching, or changed-and-matching.") }
+            return false
+        }
+
+        let sourceScope = requestedSourceScope ?? "changed"
+        let testScope = requestedTestScope ?? "changed-and-matching"
+        guard ["all", "changed"].contains(sourceScope) else {
+            throw CLIError.usage("--source-scope must be 'all' or 'changed'.")
+        }
+        guard ["all", "changed", "matching", "changed-and-matching"].contains(testScope) else {
+            throw CLIError.usage("--test-scope must be all, changed, matching, or changed-and-matching.")
+        }
+
+        let projectURL = URL(fileURLWithPath: configuration.project.path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
+        let projectRoot = configuration.project.kind == .swiftPackage ? projectURL : projectURL.deletingLastPathComponent()
+        let selection = try CommitChangeScopeResolver.resolve(
+            projectRoot: projectRoot,
+            sourceCommit: sourceCommit,
+            sourceBase: sourceBase,
+            testFileSuffixes: suffixes
+        )
+
+        let sourceFiles: [String]
+        if sourceScope == "changed" {
+            if configuration.source.isEmpty {
+                sourceFiles = selection.changedSourceFiles
+            } else {
+                let requestedPaths = configuration.source.map {
+                    URL(fileURLWithPath: $0, relativeTo: projectRoot).standardizedFileURL.path
+                }
+                sourceFiles = selection.changedSourceFiles.filter { file in
+                    let absolute = projectRoot.appendingPathComponent(file).standardizedFileURL.path
+                    return requestedPaths.contains { absolute == $0 || absolute.hasPrefix($0.hasSuffix("/") ? $0 : $0 + "/") }
+                }
+            }
+            configuration.source = sourceFiles
+        } else {
+            sourceFiles = configuration.source
+        }
+
+        let selectedTestFiles = selection.testFiles(for: testScope)
+        if testScope != "all" {
+            configuration.tests.files = Array(Set(configuration.tests.files + selectedTestFiles)).sorted()
+            configuration.project.testPackageRoots = Array(Set(configuration.project.testPackageRoots + selection.testPackageRoots)).sorted()
+            if selectedTestFiles.isEmpty && configuration.tests.isEmpty && configuration.project.testTargets.isEmpty {
+                throw CLIError.usage("No test files were selected from the commit range. Use --test-scope all, pass a test selector, or choose a full --test-target.")
+            }
+        }
+
+        cliLog("Commit scope: \(selection.baseCommit.prefix(12))..\(selection.headCommit.prefix(12)); \(selection.changedSourceFiles.count) changed source files, \(selection.changedTestFiles.count) changed test files, \(selection.matchingTestFiles.count) matching test files.")
+        let sourceDescription = sourceScope == "all" ? "all discovered source files" : "\(sourceFiles.count) changed source files"
+        let testDescription = testScope == "all" ? "full configured test plan" : "\(selectedTestFiles.count) selected test files"
+        cliLog("Selected scope: \(sourceDescription); \(testDescription)\(configuration.project.testPackageRoots.isEmpty ? "" : "; package roots: \(configuration.project.testPackageRoots.joined(separator: ", "))").")
+
+        if sourceScope == "changed" && sourceFiles.isEmpty {
+            cliLog("No changed production Swift files are in scope; skipping mutation testing.")
+            return true
+        }
+        return false
+    }
+
     static func validate(_ configuration: RunConfiguration) throws {
         let root = URL(fileURLWithPath: configuration.project.path, isDirectory: true).standardizedFileURL
         switch configuration.project.kind {
@@ -215,6 +293,11 @@ enum SwiftMutationTestingCLI {
         return "\(seconds)s"
     }
 
+    static func cliLog(_ message: String) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        print("[\(timestamp)][mutest-swift] \(message)")
+    }
+
     static let help = """
     mutest-swift 0.3.0
 
@@ -228,6 +311,12 @@ enum SwiftMutationTestingCLI {
       --project-kind KIND            swift-package | xcode-project | xcode-workspace
       --scheme NAME                  Xcode scheme
       --test-package-root PATH       Package whose test files belong to the scheme; repeatable
+      --source-commit COMMIT         Commit or ref to analyze; must match the checked-out commit
+      --source-base COMMIT           Compare from this commit or ref (default: source commit's parent)
+      --source-scope SCOPE           all | changed (commit mode defaults to changed)
+      --test-scope SCOPE              all | changed | matching | changed-and-matching
+                                      commit mode defaults to changed-and-matching
+      --test-file-suffix SUFFIX       Filename suffix after a changed source name (default: Tests.swift); repeatable
       --destination-simulator VALUE  iOS Simulator for Xcode tests, e.g. platform=iOS Simulator,name=iPhone 17,OS=latest
       --xcodebuild-arg NAME=VALUE    Xcode build setting; repeatable
 

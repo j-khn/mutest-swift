@@ -29,6 +29,26 @@ inputs:
     description: Local Swift package folders containing selected test files, relative to the project root, one path per line; needed when the Xcode project does not list those package test files directly
     required: false
     default: ""
+  source-commit:
+    description: Commit to analyze; enables changed source and test selection by default
+    required: false
+    default: ""
+  source-base:
+    description: Base commit for the comparison; blank compares with the source commit's first parent
+    required: false
+    default: ""
+  source-scope:
+    description: all or changed; blank defaults to changed when source-commit is set
+    required: false
+    default: ""
+  test-scope:
+    description: all, changed, matching, or changed-and-matching; blank defaults to changed-and-matching when source-commit is set
+    required: false
+    default: ""
+  test-file-suffix:
+    description: Suffix appended to a changed source basename to find related tests; default Tests.swift; one suffix per line
+    required: false
+    default: ""
   test-suite:
     description: Test suite names, one per line; adds matching tests from any test target in the selected scheme
     required: false
@@ -149,6 +169,13 @@ inputs:
     description: Optional path to a CLI built by the build-cli action
     required: false
     default: ""
+outputs:
+  report-directory:
+    description: Directory containing report.md and report.json
+    value: ${{ steps.arguments.outputs.report-directory }}
+  run-status:
+    description: completed or skipped because no changed production Swift files were found
+    value: ${{ steps.arguments.outputs.run-status }}
 runs:
   using: composite
   steps:
@@ -163,6 +190,11 @@ runs:
         INPUT_SOURCE: ${{ inputs.source }}
         INPUT_TEST_FILE: ${{ inputs.test-file }}
         INPUT_TEST_PACKAGE_ROOT: ${{ inputs.test-package-root }}
+        INPUT_SOURCE_COMMIT: ${{ inputs.source-commit }}
+        INPUT_SOURCE_BASE: ${{ inputs.source-base }}
+        INPUT_SOURCE_SCOPE: ${{ inputs.source-scope }}
+        INPUT_TEST_SCOPE: ${{ inputs.test-scope }}
+        INPUT_TEST_FILE_SUFFIX: ${{ inputs.test-file-suffix }}
         INPUT_TEST_SUITE: ${{ inputs.test-suite }}
         INPUT_SUITE: ${{ inputs.suite }}
         INPUT_TEST_NAME: ${{ inputs.test-name }}
@@ -210,6 +242,11 @@ runs:
         while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-target "$value"); done <<< "$INPUT_TEST_TARGET"
         while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-target "$value"); done <<< "$INPUT_TEST_TARGETS"
         while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-package-root "$value"); done <<< "$INPUT_TEST_PACKAGE_ROOT"
+        [[ -n "$INPUT_SOURCE_COMMIT" ]] && args+=(--source-commit "$INPUT_SOURCE_COMMIT")
+        [[ -n "$INPUT_SOURCE_BASE" ]] && args+=(--source-base "$INPUT_SOURCE_BASE")
+        [[ -n "$INPUT_SOURCE_SCOPE" ]] && args+=(--source-scope "$INPUT_SOURCE_SCOPE")
+        [[ -n "$INPUT_TEST_SCOPE" ]] && args+=(--test-scope "$INPUT_TEST_SCOPE")
+        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-file-suffix "$value"); done <<< "$INPUT_TEST_FILE_SUFFIX"
         if [[ -n "$INPUT_CACHE_PATH" ]]; then
           cache_path="$INPUT_CACHE_PATH"
           project_root="$project_path"
@@ -271,20 +308,28 @@ runs:
           fi
         fi
         "$tool_binary" "${args[@]}" --output "$output"
+        if [[ -f "$output/report.md" ]]; then
+          echo "run-status=completed" >> "$GITHUB_OUTPUT"
+        else
+          echo "run-status=skipped" >> "$GITHUB_OUTPUT"
+        fi
     - name: Add Markdown report to the job summary
       if: always()
       shell: bash
       env:
         REPORT_DIRECTORY: ${{ steps.arguments.outputs.report-directory }}
+        RUN_STATUS: ${{ steps.arguments.outputs.run-status }}
       run: |
         REPORT_PATH="$REPORT_DIRECTORY/report.md"
         if [[ -f "$REPORT_PATH" ]]; then
           cat "$REPORT_PATH" >> "$GITHUB_STEP_SUMMARY"
+        elif [[ "$RUN_STATUS" == "skipped" ]]; then
+          echo "No changed production Swift files were found in the requested commit range. Mutation testing was skipped." >> "$GITHUB_STEP_SUMMARY"
         else
           echo "Mutation report was not produced. Check the earlier action logs for the failure." >> "$GITHUB_STEP_SUMMARY"
         fi
     - name: Upload mutation reports
-      if: always()
+      if: always() && steps.arguments.outputs.run-status != 'skipped'
       uses: actions/upload-artifact@v4
       with:
         name: swift-mutation-testing-report

@@ -55,9 +55,8 @@ enum PackageDependencyResolver {
                 throw MutationEngineError.invalidProject("Could not read package dependencies from \(manifest.path). See \(dumpLog.path)")
             }
             let packageTestTargets = try testTargetBySourceFile(in: dump.output, packageRoot: package)
-            for (file, targets) in packageTestTargets {
-                testTargetByFile[file, default: []] += targets
-                testTargetByFile[file] = Array(Set(testTargetByFile[file] ?? [])).sorted()
+            for (file, targets) in packageTestTargets where testTargetByFile[file] == nil {
+                testTargetByFile[file] = targets
             }
             for path in try localDependencyPaths(in: dump.output, manifest: manifest) {
                 let dependency = URL(fileURLWithPath: path, relativeTo: package).standardizedFileURL

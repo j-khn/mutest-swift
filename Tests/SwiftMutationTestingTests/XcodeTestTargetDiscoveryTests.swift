@@ -67,6 +67,49 @@ struct XcodeTestTargetDiscoveryTests {
         #expect(graph.testTargetByFile[testFile.standardizedFileURL.path] == ["ContactsTests"])
     }
 
+    @Test("keeps Xcode target ownership when selected tests also belong to a local package")
+    func xcodeTargetTakesPrecedenceOverPackageTarget() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let projectURL = root.appendingPathComponent("Fixture.xcodeproj", isDirectory: true)
+        let packageURL = root.appendingPathComponent("Modules/Contacts", isDirectory: true)
+        let testFile = packageURL.appendingPathComponent("Tests/ContactsTests/ContactTests.swift")
+        try FileManager.default.createDirectory(at: projectURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: testFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "import Testing\n".write(to: testFile, atomically: true, encoding: .utf8)
+        try #"""
+        // swift-tools-version: 6.0
+        import PackageDescription
+        let package = Package(name: "Contacts", targets: [
+            .target(name: "Contacts"),
+            .testTarget(name: "ContactsTests", dependencies: ["Contacts"])
+        ])
+        """#.write(to: packageURL.appendingPathComponent("Package.swift"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = #"""
+        { archiveVersion = 1; objectVersion = 56; objects = {
+          AAAAAAAAAAAAAAAAAAAAAAAA = { isa = PBXProject; mainGroup = BBBBBBBBBBBBBBBBBBBBBBBB; targets = ( DDDDDDDDDDDDDDDDDDDDDDDD, ); };
+          BBBBBBBBBBBBBBBBBBBBBBBB = { isa = PBXGroup; children = ( EEEEEEEEEEEEEEEEEEEEEEEE, ); sourceTree = "<group>"; };
+          EEEEEEEEEEEEEEEEEEEEEEEE = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Modules/Contacts/Tests/ContactsTests/ContactTests.swift"; sourceTree = SOURCE_ROOT; };
+          DDDDDDDDDDDDDDDDDDDDDDDD = { isa = PBXNativeTarget; name = AppTests; productType = "com.apple.product-type.bundle.unit-test"; buildPhases = ( FFFFFFFFFFFFFFFFFFFFFFFF, ); };
+          FFFFFFFFFFFFFFFFFFFFFFFF = { isa = PBXSourcesBuildPhase; files = ( 111111111111111111111111, ); };
+          111111111111111111111111 = { isa = PBXBuildFile; fileRef = EEEEEEEEEEEEEEEEEEEEEEEE; };
+        }; rootObject = AAAAAAAAAAAAAAAAAAAAAAAA; }
+        """#
+        try project.write(to: projectURL.appendingPathComponent("project.pbxproj"), atomically: true, encoding: .utf8)
+
+        let graph = try PackageDependencyResolver.discover(
+            projectURL: projectURL,
+            projectRoot: root,
+            kind: .xcodeProject,
+            testPackageRoots: [packageURL],
+            logs: root.appendingPathComponent("logs"),
+            timeout: 10
+        )
+
+        #expect(graph.testTargetByFile[testFile.standardizedFileURL.path] == ["AppTests"])
+    }
+
     @Test("workspace discovery combines test-file membership from referenced Xcode projects")
     func workspaceDiscoveryIncludesXcodeTestTargets() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
