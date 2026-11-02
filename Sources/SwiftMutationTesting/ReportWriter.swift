@@ -80,7 +80,7 @@ public enum MutationReportWriter {
                 if let target = runDetails.testTarget, !target.isEmpty {
                     scopeDescription = "All tests in target `\(target)`"
                 } else {
-                    scopeDescription = "All tests in the configured test target"
+                    scopeDescription = "All tests configured for the package or Xcode scheme"
                 }
             } else {
                 scopeDescription = "\(report.scope.tests.count) selected test(s)"

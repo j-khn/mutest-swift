@@ -156,7 +156,9 @@ enum SwiftMutationTestingCLI {
             guard let scheme = configuration.project.scheme, !scheme.isEmpty else { throw CLIError.usage("Xcode projects/workspaces require --scheme.") }
             let path = URL(fileURLWithPath: configuration.project.path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
             guard FileManager.default.fileExists(atPath: path.path) else { throw CLIError.usage("Xcode project/workspace does not exist at \(path.path).") }
-            guard let target = configuration.project.testTarget, !target.isEmpty else { throw CLIError.usage("Xcode projects/workspaces require --test-target so the test scope is explicit.") }
+            if (configuration.project.testTarget == nil || configuration.project.testTarget?.isEmpty == true), !configuration.tests.isEmpty {
+                throw CLIError.usage("Xcode test-file, suite, and test selectors require --test-target. Omit all test selectors to run every test target in the selected scheme's test plan.")
+            }
         }
         _ = try SwiftTestSelectorResolver().resolve(
             projectRoot: root,
@@ -221,7 +223,7 @@ enum SwiftMutationTestingCLI {
       --suite NAME                   Test suite selector; repeatable
       --test NAME                    Test function or custom @Test name; repeatable
       --scheme NAME                  Xcode scheme
-      --test-target NAME             Xcode test target
+      --test-target NAME             Optional Xcode test target; omit to run the scheme's full test plan
       --destination VALUE            xcodebuild destination, e.g. platform=iOS Simulator,name=iPhone 17
       --xcodebuild-arg NAME=VALUE    Xcode build setting; repeatable
       --operators IDS                Comma-separated canonical operator IDs
@@ -245,7 +247,8 @@ enum SwiftMutationTestingCLI {
       --fail-on-new-survivors        Fail when new survivors are supplied to the gate API
       --output PATH                  Report directory (default: .swift-mutation-testing)
 
-    Without test selectors, the configured test target's full suite runs. Source selection never
+    Without test selectors, all tests in the configured Swift package or Xcode scheme's test plan run.
+    For Xcode projects, --test-target optionally narrows this to one target. Source selection never
     narrows tests automatically, allowing full-suite ripple checks for changed source files.
     """
 }

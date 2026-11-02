@@ -266,7 +266,17 @@ public struct MutationEngine: Sendable {
             forXcode: configuration.project.kind != .swiftPackage
         )
         timings.testDiscoverySeconds = Date().timeIntervalSince(testDiscoveryStarted)
-        mutationLog("Test discovery complete: \(selection.identifiers.count) selected test identifiers\(selection.allTests ? " (full target)" : "").")
+        let testScopeLabel: String
+        if !selection.allTests {
+            testScopeLabel = "selected tests"
+        } else if configuration.project.kind == .swiftPackage {
+            testScopeLabel = "full package test suite"
+        } else if let target = configuration.project.testTarget, !target.isEmpty {
+            testScopeLabel = "full test target: \(target)"
+        } else {
+            testScopeLabel = "full scheme test plan"
+        }
+        mutationLog("Test discovery complete: \(selection.identifiers.count) selected test identifiers (\(testScopeLabel)).")
         let xcodeBuildWorkspace = configuration.project.kind == .swiftPackage ? nil : try XcodeBuildWorkspace()
         defer { xcodeBuildWorkspace?.cleanup() }
         let adapter = NativeTestAdapter(project: adapterProject, selection: configuration.tests, xcodebuildArguments: xcodebuildArguments, xcodeDerivedDataPath: xcodeBuildWorkspace?.derivedData)
@@ -849,9 +859,14 @@ public struct MutationEngine: Sendable {
         case .swiftPackage:
             guard FileManager.default.fileExists(atPath: root.appendingPathComponent("Package.swift").path) else { throw MutationEngineError.invalidProject("No Package.swift found at \(root.path).") }
         case .xcodeProject:
-            guard projectURL.pathExtension == "xcodeproj", FileManager.default.fileExists(atPath: projectURL.path), let target = configuration.project.testTarget, !target.isEmpty else { throw MutationEngineError.invalidProject("Xcode project runs require an existing .xcodeproj path and --test-target.") }
+            guard projectURL.pathExtension == "xcodeproj", FileManager.default.fileExists(atPath: projectURL.path) else { throw MutationEngineError.invalidProject("Xcode project runs require an existing .xcodeproj path.") }
         case .xcodeWorkspace:
-            guard projectURL.pathExtension == "xcworkspace", FileManager.default.fileExists(atPath: projectURL.path), let target = configuration.project.testTarget, !target.isEmpty else { throw MutationEngineError.invalidProject("Xcode workspace runs require an existing .xcworkspace path and --test-target.") }
+            guard projectURL.pathExtension == "xcworkspace", FileManager.default.fileExists(atPath: projectURL.path) else { throw MutationEngineError.invalidProject("Xcode workspace runs require an existing .xcworkspace path.") }
+        }
+        if configuration.project.kind != .swiftPackage,
+           configuration.project.testTarget?.isEmpty ?? true,
+           !configuration.tests.isEmpty {
+            throw MutationEngineError.invalidSelection("Xcode test-file, suite, and test selectors require --test-target. Omit all test selectors to run the selected scheme's full test plan.")
         }
     }
 

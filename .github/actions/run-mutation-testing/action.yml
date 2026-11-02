@@ -29,7 +29,7 @@ inputs:
     required: false
     default: ""
   test-target:
-    description: Xcode test target whose suite should be selected
+    description: Optional Xcode test target; omit to run all test targets in the scheme's test plan
     required: false
     default: ""
   destination:

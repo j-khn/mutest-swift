@@ -56,7 +56,7 @@ For an iOS or iPadOS Swift package inside an Xcode project or workspace, pass th
 
 When you pass a package folder, `./run` finds its enclosing Xcode project or workspace and runs the matching package scheme on a simulator. It does not fall back to `swift test` on the Mac. A package without an enclosing Xcode project or workspace cannot run iOS or iPadOS tests this way.
 
-For an Xcode project or workspace, the tool asks which scheme, test target, and simulator to use. If you pass a package folder and its name matches an Xcode scheme, that scheme is selected automatically. Press Enter to choose the first option in other menus. You can pass the choices as options to skip the prompts. iPhone and iPad simulators are supported.
+For an Xcode project or workspace, the tool asks which scheme, test scope, and simulator to use. Choose all test targets in the scheme's test plan, or select one target for a smaller run. If you pass a package folder and its name matches an Xcode scheme, that scheme is selected automatically. Press Enter to choose the first option in other menus. You can pass the choices as options to skip the prompts. iPhone and iPad simulators are supported.
 
 <details>
 <summary>CLI options</summary>
@@ -65,7 +65,7 @@ For an Xcode project or workspace, the tool asks which scheme, test target, and 
 | --- | --- | --- |
 | `PROJECT` | iOS/iPadOS package folder with an enclosing Xcode project/workspace, `.xcodeproj`, `.xcworkspace`, or folder containing one; defaults to `.` | Project to test. |
 | `--scheme NAME` | Xcode scheme | Selects an Xcode scheme. Asked interactively if missing. |
-| `--target NAME` or `--test-target NAME` | Xcode test target name, such as `ShareContactsTests` | Selects the tests to run. This is not a source file. Asked interactively if missing. |
+| `--target NAME` or `--test-target NAME` | Optional Xcode test target, such as `ShareContactsTests` | Limits tests to that target. Omit it to run all test targets in the selected scheme's test plan. |
 | `--destination VALUE` | Xcode destination string | Chooses the simulator. Asked interactively if missing. |
 | `--parallelism N` or `--parallelization N` | Positive number; default `2` | Runs up to this many mutants at once. |
 | `--source PATH` | Swift source file or folder; repeatable | Limits where mutations are made. No value means all discovered source files. |
@@ -93,7 +93,7 @@ Examples:
 
 ### 2. Run with GitHub Actions
 
-GitHub reads workflow files from `.github/workflows/`, so create your workflow there. The example below runs on pushes and pull requests to `main`; change the branch name if your repository uses another one. It runs the full configured test target unless you add test selectors.
+GitHub reads workflow files from `.github/workflows/`, so create your workflow there. The example below runs on pushes and pull requests to `main`; change the branch name if your repository uses another one. Without `test-target`, it runs all test targets in the scheme's test plan.
 
 <small><em>Note: `mutest-swift` is private for now. You need permission to clone it and to let your repository use its GitHub Action. Grant Action access in `mutest-swift` → Settings → Actions → General → Access. <a href="https://docs.github.com/en/actions/how-tos/reuse-automations/share-across-private-repositories">GitHub explains this setting</a>.</em></small>
 
@@ -122,7 +122,6 @@ jobs:
           project-path: MyApp.xcodeproj
           project-kind: xcode-project
           scheme: MyApp
-          test-target: MyAppTests
           destination: platform=iOS Simulator,name=iPhone 17,OS=latest
 ```
 
@@ -135,9 +134,10 @@ Replace `MyApp` and the simulator name with values from your project and runner.
 | --- | --- | --- |
 | `project-path` | Required | Package folder, `.xcodeproj`, or `.xcworkspace`. |
 | `project-kind` | `swift-package` (default), `xcode-project`, `xcode-workspace` | Project type. |
-| `scheme`, `test-target`, `destination` | Xcode values | Xcode scheme, test target, and simulator destination. |
+| `scheme`, `destination` | Required for Xcode projects | Xcode scheme and simulator destination. |
+| `test-target` | Optional | Limit the run to one Xcode test target. Omit it to run the scheme's full test plan. |
 | `source` | One relative path per line; blank means all discovered source | Limits mutation locations. |
-| `test-file`, `suite`, `test` | One selector per line; blank means full target | Optionally limits tests. |
+| `test-file`, `suite`, `test` | One selector per line; blank means full test scope | Optionally limits tests. For Xcode, provide `test-target` when using these selectors. |
 | `operator-tier` | `experimental` (default) or `all` | Chooses the operator set. `conservative` and `default` are not available yet. |
 | `parallelism` | Positive number; default `2` | Maximum number of concurrent mutants. |
 | `xcodebuild-arg` | One `NAME=VALUE` per line | Extra Xcode build settings. |
@@ -161,7 +161,7 @@ Replace `MyApp` and the simulator name with values from your project and runner.
 
 The tool first runs the selected tests on the original code. If they fail, it stops. It then tries small code changes, one mutant at a time. If a test fails while a mutant is confirmed active, that mutant is killed. If tests pass, the tool finishes the selected test run to check whether the mutant survived or had no coverage.
 
-By default, it mutates all discovered source files and runs all tests in the configured test target. `--source` limits which files are changed; it does not limit tests. Use `--test-file`, `--suite`, or `--test` to select fewer tests.
+By default, it mutates all discovered source files and runs all tests in the configured Swift package or Xcode scheme's test plan. `--source` limits which files are changed; it does not limit tests. Use `--test-target` to limit an Xcode run to one target, or `--test-file`, `--suite`, or `--test` to select fewer tests within a target.
 
 Swift package dependencies are resolved from `Package.swift`. Local sibling packages are copied into the isolated sandbox with their relative paths preserved. Git dependencies use SwiftPM or Xcode resolution, including the manifest's version, exact version, tag, branch, or revision requirement. Source files and resources declared by package targets are copied with their package.
 

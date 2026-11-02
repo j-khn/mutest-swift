@@ -25,7 +25,7 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("project", nargs="?", default=".", help="iOS/iPadOS package inside an Xcode project, .xcodeproj, .xcworkspace, or folder containing one (default: current folder)")
     result.add_argument("--scheme", help="Xcode scheme; prompted if missing")
-    result.add_argument("--target", "--test-target", dest="test_target", help="Xcode test target name (not a source file); prompted if missing")
+    result.add_argument("--target", "--test-target", dest="test_target", help="Xcode test target name (not a source file); omit for the scheme's full test plan")
     result.add_argument("--destination", help="Xcode destination; prompted if missing")
     result.add_argument("--parallelism", "--parallelization", type=positive_int, default=2, help="worker count (default: 2)")
     result.add_argument("--source", action="append", default=[], help="source file/folder to mutate; repeatable")
@@ -290,7 +290,10 @@ def common_arguments(args: argparse.Namespace, include_xcodebuild_args: bool = T
 def execute_task(task: dict[str, str], args: argparse.Namespace, destination: str | None, output: str | None) -> int:
     command = ["validate" if args.validate else "run", "--project", task["path"], "--project-kind", task["kind"]]
     if task["kind"] != "swift-package":
-        command += ["--scheme", task["scheme"], "--test-target", task["target"], "--destination", destination or ""]
+        command += ["--scheme", task["scheme"]]
+        if task.get("target"):
+            command += ["--test-target", task["target"]]
+        command += ["--destination", destination or ""]
     command += common_arguments(
         args,
         include_xcodebuild_args=task["kind"] != "swift-package",
@@ -308,7 +311,7 @@ def run(args: argparse.Namespace) -> int:
     if args.test_target and ("/" in args.test_target or "\\" in args.test_target or args.test_target.lower().endswith(".swift")):
         raise RuntimeError(
             "--target must be a test target name, not a Swift file or folder. "
-            "Use --source PATH for the code file to mutate. Leave --target out to choose the test target from the menu."
+            "Use --source PATH for the code file to mutate. Leave --target out to choose a test scope from the menu."
         )
 
     print(f"[run] Detecting project at {Path(args.project).expanduser()}…", flush=True)
@@ -321,7 +324,7 @@ def run(args: argparse.Namespace) -> int:
             output = args.output
         else:
             output = None
-        print("Test scope: full configured target" if not (args.test_files or args.suite or args.tests) else "Test scope: selected tests", flush=True)
+        print("Test scope: full configured package" if not (args.test_files or args.suite or args.tests) else "Test scope: selected tests", flush=True)
         print("Mutation scope: all discovered source files" if not args.source else f"Mutation scope: {', '.join(args.source)}", flush=True)
         return execute_task(task, args, None, output)
 
@@ -347,9 +350,15 @@ def run(args: argparse.Namespace) -> int:
     test_target = args.test_target
     if not test_target:
         choices_for_scheme = package[1] if package else test_targets(project_path, info, selected_scheme)
-        if not choices_for_scheme:
-            raise RuntimeError(f"No test target was found for scheme '{selected_scheme}'. Pass --target NAME.")
-        test_target = ask_choice("Which test target do you want to run?", choices_for_scheme)
+        if args.test_files or args.suite or args.tests:
+            if not choices_for_scheme:
+                raise RuntimeError(f"Cannot apply test selectors without a test target for scheme '{selected_scheme}'. Pass --target NAME.")
+            test_target = ask_choice("Which test target do you want to run?", choices_for_scheme)
+        else:
+            all_targets = "All test targets in scheme"
+            selected_scope = ask_choice("Which test scope do you want to run?", [all_targets, *choices_for_scheme], default_first=True)
+            if selected_scope != all_targets:
+                test_target = selected_scope
     else:
         choices_for_scheme = package[1] if package else test_targets(project_path, info, selected_scheme)
         if choices_for_scheme and test_target not in choices_for_scheme:
@@ -360,7 +369,9 @@ def run(args: argparse.Namespace) -> int:
             )
 
     task = {"kind": kind, "path": str(project_path), "scheme": selected_scheme,
-            "target": test_target, "name": f"{selected_scheme} / {test_target}"}
+            "name": f"{selected_scheme} / {test_target}" if test_target else f"{selected_scheme} / all test targets"}
+    if test_target:
+        task["target"] = test_target
     if package:
         package_path, _ = package
         task["source"] = str(package_path.relative_to(project_path.parent))
@@ -373,6 +384,13 @@ def run(args: argparse.Namespace) -> int:
         if not args.destination:
             print("[run] Finding available iOS simulators…", flush=True)
         destination = args.destination or choose_destination()
+    if kind != "swift-package":
+        if args.test_files or args.suite or args.tests:
+            print(f"Test scope: selected tests in {test_target}", flush=True)
+        elif test_target:
+            print(f"Test scope: all tests in target {test_target}", flush=True)
+        else:
+            print("Test scope: all test targets in the selected scheme's test plan", flush=True)
 
     task = tasks[0]
     output = args.output

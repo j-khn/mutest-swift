@@ -38,12 +38,18 @@ struct XcodeTestArtifacts: Sendable {
     var template: URL
     var hostBundleIDs: [String]
 
-    static func snapshot(derivedData: URL, into directory: URL, testTarget: String) throws -> Self {
+    static func snapshot(derivedData: URL, into directory: URL, testTarget: String? = nil) throws -> Self {
         let original = derivedData.appendingPathComponent("Build/Products")
+        let selectedTarget = testTarget.flatMap { $0.isEmpty ? nil : $0 }
         let candidates = try FileManager.default.contentsOfDirectory(at: original, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "xctestrun" }
-        let matches = try candidates.filter { file in
-            containsTarget(try read(file), name: testTarget)
+        let matches: [URL]
+        if let selectedTarget {
+            matches = try candidates.filter { file in containsTarget(try read(file), name: selectedTarget) }
+        } else {
+            // A scheme's default test plan may contain several test bundles. Preserve the
+            // whole manifest so xcodebuild runs every target in that plan.
+            matches = candidates
         }
         let defaults = try matches.filter { (try read($0)["TestPlan"] as? [String: Any])?["IsDefault"] as? Bool == true }
         let selected = defaults.isEmpty ? matches : defaults
@@ -59,7 +65,9 @@ struct XcodeTestArtifacts: Sendable {
             let found = candidates.isEmpty
                 ? "No .xctestrun files were generated."
                 : "Found \(candidates.count) candidate(s): \(details.joined(separator: "; "))."
-            throw MutationEngineError.invalidProject("Expected one generated test manifest for '\(testTarget)' (or its default test plan); found \(selected.count) matching manifest(s) in \(original.path). \(found)")
+            let expected = selectedTarget.map { "for test target '\($0)' (or its default test plan)" } ?? "for the selected scheme's test plan"
+            let scopeHint = selectedTarget == nil ? " Pass --test-target to select one target if the scheme produces multiple manifests." : ""
+            throw MutationEngineError.invalidProject("Expected one generated test manifest \(expected); found \(selected.count) matching manifest(s) in \(original.path). \(found)\(scopeHint)")
         }
         let products = directory.appendingPathComponent("Products")
         try XcodeFileCopy.clone(original, to: products)
