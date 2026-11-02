@@ -126,33 +126,34 @@ jobs:
       - name: Run mutation tests
         uses: j-khn/mutest-swift/.github/actions/run-mutation-testing@main
         with:
-          project-path: MyApp.xcodeproj
+          project: MyApp.xcodeproj
           project-kind: xcode-project
           scheme: MyApp
-          destination: platform=iOS Simulator,name=iPhone 17,OS=latest
-          test-targets: |
+          destination-simulator: platform=iOS Simulator,name=iPhone 17,OS=latest
+          test-target: |
             ShareUnitTests
           test-file: |
             ShareContacts/Tests/ContactTests.swift
-          test: |
+          test-name: |
             ShareUITests::testRefresh
 ```
 
-Replace `MyApp` and the simulator name with values from your project and runner. For a Swift package, use `project-path: .` and `project-kind: swift-package`; omit `scheme`, `test-targets`, and `destination`. The Action builds the tool, runs the tests, adds the Markdown report to the workflow summary, and uploads the reports.
+Replace `MyApp` and the simulator name with values from your project and runner. For a Swift package, use `project: .` and `project-kind: swift-package`; omit `scheme`, `test-target`, and `destination-simulator`. The Action builds the tool, runs the tests, adds the Markdown report to the workflow summary, and uploads the reports.
 
 <details>
 <summary>GitHub Action inputs</summary>
 
 | Input | Values or default | What it does |
 | --- | --- | --- |
-| `project-path` | Required | Package folder, `.xcodeproj`, or `.xcworkspace`. |
+| `project` | Required | Package folder, `.xcodeproj`, or `.xcworkspace`; matches `--project`. |
 | `project-kind` | `swift-package` (default), `xcode-project`, `xcode-workspace` | Project type. |
-| `scheme`, `destination` | Required for Xcode projects | Xcode scheme and simulator destination. |
-| `test-targets` | One Xcode test target per line; optional | Runs every test in each listed target. The older `test-target` input still accepts one target. Omit both to use the scheme's full test plan when there are no selectors. |
-| `source` | One relative path per line; blank means all discovered source | Limits mutation locations. |
-| `test-file`, `suite`, `test` | One selector per line; blank means no filter | Adds matching tests from any target included in the chosen scheme. Selectors combine with target-wide selections; you do not need to name their targets separately. |
+| `scheme`, `destination-simulator` | Required for Xcode projects | Xcode scheme and simulator destination; match `--scheme` and `--destination-simulator`. |
+| `test-target` | One Xcode test target per line; optional | Runs every test in each listed target. Omit it to use the scheme's full test plan when there are no selectors. |
+| `mutation-source` | One relative path per line; blank means all discovered source | Limits mutation locations; matches repeatable `--mutation-source`. |
+| `test-file`, `test-suite`, `test-name` | One selector per line; blank means no filter | Adds matching tests from any target included in the chosen scheme. Selectors combine with target-wide selections; you do not need to name their targets separately. |
+| `operators` | Comma-separated operator names; blank means all available | Limits mutation types; matches `--operators`. |
 | `operator-tier` | `experimental` (default) or `all` | Chooses the operator set. `conservative` and `default` are not available yet. |
-| `parallelism` | Positive number; default `2` | Maximum number of concurrent mutants. |
+| `workers` | Positive number; default `2` | Maximum number of concurrent mutants; matches `--workers`. |
 | `xcodebuild-arg` | One `NAME=VALUE` per line | Extra Xcode build settings. |
 | `cache-path` | Folder; blank uses default locations | Sets where reusable results and the CLI build cache are stored. |
 | `no-cache`, `no-resume` | `true` or `false`; default `false` | Disables cache use or resuming prior results. |
@@ -165,8 +166,10 @@ Replace `MyApp` and the simulator name with values from your project and runner.
 | `maximum-score-drop` | Number from `0` to `1` | Maximum allowed score drop from the baseline report. |
 | `fail-on-new-survivors` | `true` or `false`; default `false` | Fails if this run adds survivors compared with the baseline. |
 | `maximum-integrity-warnings` | Zero or higher; default `0` | Maximum allowed integrity warnings. |
-| `output-path` | Folder; default `.swift-mutation-testing` | Where reports are written. |
+| `output` | Folder; default `.swift-mutation-testing` | Where reports are written; matches `--output`. |
 | `tool-path` | Executable path; blank by default | Use a previously built CLI. Usually leave blank. |
+
+The older input names `project-path`, `source`, `suite`, `test`, `test-targets`, `destination`, `parallelism`, and `output-path` remain accepted as aliases.
 
 </details>
 

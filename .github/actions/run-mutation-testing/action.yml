@@ -1,27 +1,44 @@
 name: Run Swift mutation testing
 description: Run the Swift mutation CLI, add its Markdown report to the job summary, and upload compact reports.
 inputs:
-  project-path:
+  project:
     description: Swift package root or .xcodeproj/.xcworkspace path
-    required: true
+    required: false
+    default: ""
+  project-path:
+    description: Legacy alias for project
+    required: false
+    default: ""
   project-kind:
     description: swift-package, xcode-project, or xcode-workspace
     required: false
     default: swift-package
-  source:
+  mutation-source:
     description: Source files/directories to mutate, one relative path per line; empty selects all Swift source
+    required: false
+    default: ""
+  source:
+    description: Legacy alias for mutation-source
     required: false
     default: ""
   test-file:
     description: Test files to run, one path per line; adds matching tests from any test target in the selected scheme
     required: false
     default: ""
-  suite:
+  test-suite:
     description: Test suite names, one per line; adds matching tests from any test target in the selected scheme
     required: false
     default: ""
-  test:
+  suite:
+    description: Legacy alias for test-suite
+    required: false
+    default: ""
+  test-name:
     description: Test function or custom Swift Testing name, one per line; adds matching tests from any test target in the selected scheme
+    required: false
+    default: ""
+  test:
+    description: Legacy alias for test-name
     required: false
     default: ""
   scheme:
@@ -29,15 +46,19 @@ inputs:
     required: false
     default: ""
   test-target:
-    description: Legacy single Xcode test target; use test-targets for one or more targets
+    description: Xcode test targets to run in full, one target per line; selectors can add tests from other targets in the selected scheme
     required: false
     default: ""
   test-targets:
-    description: Xcode test targets to run in full, one target per line; file, suite, and test selectors add matches from other targets in the selected scheme
+    description: Legacy alias for test-target
+    required: false
+    default: ""
+  destination-simulator:
+    description: xcodebuild destination
     required: false
     default: ""
   destination:
-    description: xcodebuild destination
+    description: Legacy alias for destination-simulator
     required: false
     default: ""
   xcodebuild-arg:
@@ -48,8 +69,16 @@ inputs:
     description: experimental or all; conservative and default are unavailable until operators have campaign data
     required: false
     default: experimental
+  operators:
+    description: Comma-separated mutation operators, same values as --operators; blank uses all operators in the selected tier
+    required: false
+    default: ""
+  workers:
+    description: Number of simultaneous mutation workers; iOS Simulator runs get separate automatically managed simulators
+    required: false
+    default: ""
   parallelism:
-    description: Mutation workers; iOS Simulator runs get separate automatically managed simulators
+    description: Legacy alias for workers
     required: false
     default: "2"
   cache-path:
@@ -104,8 +133,12 @@ inputs:
     description: Maximum allowed integrity warnings
     required: false
     default: "0"
-  output-path:
+  output:
     description: Report directory relative to GITHUB_WORKSPACE
+    required: false
+    default: ""
+  output-path:
+    description: Legacy alias for output
     required: false
     default: .swift-mutation-testing
   tool-path:
@@ -119,18 +152,25 @@ runs:
       id: arguments
       shell: bash
       env:
+        INPUT_PROJECT: ${{ inputs.project }}
         INPUT_PROJECT_PATH: ${{ inputs.project-path }}
         INPUT_PROJECT_KIND: ${{ inputs.project-kind }}
+        INPUT_MUTATION_SOURCE: ${{ inputs.mutation-source }}
         INPUT_SOURCE: ${{ inputs.source }}
         INPUT_TEST_FILE: ${{ inputs.test-file }}
+        INPUT_TEST_SUITE: ${{ inputs.test-suite }}
         INPUT_SUITE: ${{ inputs.suite }}
+        INPUT_TEST_NAME: ${{ inputs.test-name }}
         INPUT_TEST: ${{ inputs.test }}
         INPUT_SCHEME: ${{ inputs.scheme }}
         INPUT_TEST_TARGET: ${{ inputs.test-target }}
         INPUT_TEST_TARGETS: ${{ inputs.test-targets }}
+        INPUT_DESTINATION_SIMULATOR: ${{ inputs.destination-simulator }}
         INPUT_DESTINATION: ${{ inputs.destination }}
         INPUT_XCODEBUILD_ARG: ${{ inputs.xcodebuild-arg }}
         INPUT_OPERATOR_TIER: ${{ inputs.operator-tier }}
+        INPUT_OPERATORS: ${{ inputs.operators }}
+        INPUT_WORKERS: ${{ inputs.workers }}
         INPUT_PARALLELISM: ${{ inputs.parallelism }}
         INPUT_CACHE_PATH: ${{ inputs.cache-path }}
         INPUT_NO_CACHE: ${{ inputs.no-cache }}
@@ -145,17 +185,25 @@ runs:
         INPUT_MAXIMUM_SCORE_DROP: ${{ inputs.maximum-score-drop }}
         INPUT_FAIL_ON_NEW_SURVIVORS: ${{ inputs.fail-on-new-survivors }}
         INPUT_MAXIMUM_INTEGRITY_WARNINGS: ${{ inputs.maximum-integrity-warnings }}
+        INPUT_OUTPUT: ${{ inputs.output }}
         INPUT_OUTPUT_PATH: ${{ inputs.output-path }}
         INPUT_TOOL_PATH: ${{ inputs.tool-path }}
       run: |
         set -euo pipefail
         engine_path="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)"
-        project_path="$INPUT_PROJECT_PATH"
+        project_path="${INPUT_PROJECT:-$INPUT_PROJECT_PATH}"
+        if [[ -z "$project_path" ]]; then
+          echo "Set the required 'project' input to a Swift package, .xcodeproj, or .xcworkspace path." >&2
+          exit 1
+        fi
         if [[ "$project_path" != /* ]]; then project_path="$GITHUB_WORKSPACE/$project_path"; fi
-        args=(run --project "$project_path" --project-kind "$INPUT_PROJECT_KIND" --operator-tier "$INPUT_OPERATOR_TIER" --parallelism "$INPUT_PARALLELISM" --build-timeout "$INPUT_BUILD_TIMEOUT" --baseline-timeout "$INPUT_BASELINE_TIMEOUT" --mutant-timeout "$INPUT_MUTANT_TIMEOUT" --maximum-integrity-warnings "$INPUT_MAXIMUM_INTEGRITY_WARNINGS")
+        workers="${INPUT_WORKERS:-${INPUT_PARALLELISM:-2}}"
+        destination="${INPUT_DESTINATION_SIMULATOR:-$INPUT_DESTINATION}"
+        output_directory="${INPUT_OUTPUT:-${INPUT_OUTPUT_PATH:-.swift-mutation-testing}}"
+        args=(run --project "$project_path" --project-kind "$INPUT_PROJECT_KIND" --operator-tier "$INPUT_OPERATOR_TIER" --workers "$workers" --build-timeout "$INPUT_BUILD_TIMEOUT" --baseline-timeout "$INPUT_BASELINE_TIMEOUT" --mutant-timeout "$INPUT_MUTANT_TIMEOUT" --maximum-integrity-warnings "$INPUT_MAXIMUM_INTEGRITY_WARNINGS")
         [[ -n "$INPUT_SCHEME" ]] && args+=(--scheme "$INPUT_SCHEME")
+        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-target "$value"); done <<< "$INPUT_TEST_TARGET"
         while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-target "$value"); done <<< "$INPUT_TEST_TARGETS"
-        [[ -n "$INPUT_TEST_TARGET" ]] && args+=(--test-target "$INPUT_TEST_TARGET")
         if [[ -n "$INPUT_CACHE_PATH" ]]; then
           cache_path="$INPUT_CACHE_PATH"
           project_root="$project_path"
@@ -169,17 +217,23 @@ runs:
         [[ "$INPUT_NO_RESUME" == "true" ]] && args+=(--no-resume)
         [[ "$INPUT_NO_SUPPRESSIONS" == "true" ]] && args+=(--no-suppressions)
         [[ "$INPUT_REQUIRE_SUPPRESSION_REASON" == "true" ]] && args+=(--require-suppression-reason)
-        [[ -n "$INPUT_DESTINATION" ]] && args+=(--destination "$INPUT_DESTINATION")
+        [[ -n "$destination" ]] && args+=(--destination-simulator "$destination")
+        [[ -n "$INPUT_OPERATORS" ]] && args+=(--operators "$INPUT_OPERATORS")
         while IFS= read -r value; do [[ -n "$value" ]] && args+=(--xcodebuild-arg "$value"); done <<< "$INPUT_XCODEBUILD_ARG"
         [[ -n "$INPUT_MINIMUM_SCORE" ]] && args+=(--minimum-score "$INPUT_MINIMUM_SCORE")
         [[ -n "$INPUT_BASELINE_REPORT" ]] && args+=(--baseline-report "$INPUT_BASELINE_REPORT")
         [[ -n "$INPUT_MAXIMUM_SCORE_DROP" ]] && args+=(--maximum-score-drop "$INPUT_MAXIMUM_SCORE_DROP")
         [[ "$INPUT_FAIL_ON_NEW_SURVIVORS" == "true" ]] && args+=(--fail-on-new-survivors)
-        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--source "$value"); done <<< "$INPUT_SOURCE"
+        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--mutation-source "$value"); done <<< "$INPUT_MUTATION_SOURCE"
+        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--mutation-source "$value"); done <<< "$INPUT_SOURCE"
         while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-file "$value"); done <<< "$INPUT_TEST_FILE"
-        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--suite "$value"); done <<< "$INPUT_SUITE"
-        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test "$value"); done <<< "$INPUT_TEST"
-        output="$GITHUB_WORKSPACE/$INPUT_OUTPUT_PATH"
+        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-suite "$value"); done <<< "$INPUT_TEST_SUITE"
+        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-suite "$value"); done <<< "$INPUT_SUITE"
+        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-name "$value"); done <<< "$INPUT_TEST_NAME"
+        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-name "$value"); done <<< "$INPUT_TEST"
+        output="$output_directory"
+        if [[ "$output" != /* ]]; then output="$GITHUB_WORKSPACE/$output"; fi
+        echo "report-directory=$output" >> "$GITHUB_OUTPUT"
         tool_binary="$INPUT_TOOL_PATH"
         tool_cache_path=""
         if [[ -n "$tool_binary" ]]; then
@@ -211,13 +265,13 @@ runs:
           fi
         fi
         "$tool_binary" "${args[@]}" --output "$output"
-        echo "report-directory=$output" >> "$GITHUB_OUTPUT"
     - name: Add Markdown report to the job summary
       if: always()
       shell: bash
       env:
-        REPORT_PATH: ${{ github.workspace }}/${{ inputs.output-path }}/report.md
+        REPORT_DIRECTORY: ${{ steps.arguments.outputs.report-directory }}
       run: |
+        REPORT_PATH="$REPORT_DIRECTORY/report.md"
         if [[ -f "$REPORT_PATH" ]]; then
           cat "$REPORT_PATH" >> "$GITHUB_STEP_SUMMARY"
         else
@@ -229,18 +283,18 @@ runs:
       with:
         name: swift-mutation-testing-report
         path: |
-          ${{ github.workspace }}/${{ inputs.output-path }}/report.md
-          ${{ github.workspace }}/${{ inputs.output-path }}/report.json
+          ${{ steps.arguments.outputs.report-directory }}/report.md
+          ${{ steps.arguments.outputs.report-directory }}/report.json
         if-no-files-found: warn
     - name: Remove temporary mutation data
       if: always()
       shell: bash
       env:
-        OUTPUT_PATH: ${{ inputs.output-path }}
+        OUTPUT_PATH: ${{ steps.arguments.outputs.report-directory }}
       run: |
         set -euo pipefail
         workspace_root="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
-        output_path="$GITHUB_WORKSPACE/$OUTPUT_PATH"
+        output_path="$OUTPUT_PATH"
         [[ -d "$output_path" ]] || exit 0
         output_root="$(cd "$output_path" && pwd -P)"
         if [[ "$output_root" == "$workspace_root" || "$output_root" != "$workspace_root/"* ]]; then
