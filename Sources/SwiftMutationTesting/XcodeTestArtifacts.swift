@@ -48,7 +48,18 @@ struct XcodeTestArtifacts: Sendable {
         let defaults = try matches.filter { (try read($0)["TestPlan"] as? [String: Any])?["IsDefault"] as? Bool == true }
         let selected = defaults.isEmpty ? matches : defaults
         guard selected.count == 1, let manifest = selected.first else {
-            throw MutationEngineError.invalidProject("Expected one generated test manifest for '\(testTarget)' (or its default test plan); found \(selected.count) in \(original.path).")
+            let details = try candidates.map { file in
+                let targets = targetDictionaries(try read(file)).map { target in
+                    let name = target["BlueprintName"] as? String ?? "<unnamed>"
+                    let bundle = target["TestBundlePath"] as? String ?? "<no bundle path>"
+                    return "\(name): \(bundle)"
+                }.joined(separator: ", ")
+                return "\(file.lastPathComponent) [\(targets.isEmpty ? "no test targets" : targets)]"
+            }
+            let found = candidates.isEmpty
+                ? "No .xctestrun files were generated."
+                : "Found \(candidates.count) candidate(s): \(details.joined(separator: "; "))."
+            throw MutationEngineError.invalidProject("Expected one generated test manifest for '\(testTarget)' (or its default test plan); found \(selected.count) matching manifest(s) in \(original.path). \(found)")
         }
         let products = directory.appendingPathComponent("Products")
         try XcodeFileCopy.clone(original, to: products)
@@ -57,6 +68,14 @@ struct XcodeTestArtifacts: Sendable {
         try write(relocated, to: template)
         let hosts = targetDictionaries(relocated).compactMap { $0["TestHostBundleIdentifier"] as? String }
         return Self(products: products, template: template, hostBundleIDs: Array(Set(hosts)).sorted())
+    }
+
+    static func removeGeneratedManifests(derivedData: URL) throws {
+        let products = derivedData.appendingPathComponent("Build/Products", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: products.path) else { return }
+        let manifests = try FileManager.default.contentsOfDirectory(at: products, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "xctestrun" }
+        for manifest in manifests { try FileManager.default.removeItem(at: manifest) }
     }
 
     func invocationManifest(environment: [String: String]) throws -> URL {

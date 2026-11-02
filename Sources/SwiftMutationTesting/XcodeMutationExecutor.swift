@@ -123,6 +123,9 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         let schemaFailed = initialBuild.timedOut || initialBuild.exitCode != 0
         if schemaFailed {
             try restoreSources(in: sandbox)
+            // A failed schematized build can leave an incomplete .xctestrun manifest.
+            // Force the successful original-source build to write a fresh manifest.
+            try XcodeTestArtifacts.removeGeneratedManifests(derivedData: builderData)
             let original = try build(root: sandbox, derivedData: builderData, worker: pool.workers[0], label: "baseline-build")
             timings.schemaBuildSeconds += original.elapsed
             guard !original.timedOut, original.exitCode == 0 else { throw MutationEngineError.baselineBuildFailed(log: original.outputFile, timedOut: original.timedOut) }

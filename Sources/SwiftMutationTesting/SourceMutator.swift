@@ -78,6 +78,7 @@ public struct SwiftMutationGenerator: Sendable {
 
         var output = Array(source.utf8)
         var included = Set<String>()
+        let runtimeName = Self.runtimeName(for: sorted, source: source)
         var replacements: [(SourceSpan, String)] = []
         for group in groups {
             guard let start = group.map(\.span.start).min(), let end = group.map(\.span.end).max() else { continue }
@@ -89,10 +90,10 @@ public struct SwiftMutationGenerator: Sendable {
             let original = String(decoding: output[start..<end], as: UTF8.self)
             let replacement: String
             if group.count == 1, let candidate = group.first, candidate.usesStatementForm {
-                replacement = "if __SwiftMutationRuntime.shouldRunOriginal(\"\(candidate.id)\") { \(original) }"
+                replacement = "if \(runtimeName).shouldRunOriginal(\"\(candidate.id)\") { \(original) }"
                 included.insert(candidate.id)
             } else if group.count == 1, let candidate = group.first {
-                replacement = "__SwiftMutationRuntime.evaluate(\"\(candidate.id)\", mutated: (\(candidate.replacement)), original: (\(original)))"
+                replacement = "\(runtimeName).evaluate(\"\(candidate.id)\", mutated: (\(candidate.replacement)), original: (\(original)))"
                 included.insert(candidate.id)
             } else {
                 let alternatives = group.map { candidate -> String in
@@ -105,7 +106,7 @@ public struct SwiftMutationGenerator: Sendable {
                     let mutated = String(decoding: variant, as: UTF8.self)
                     return "(\"\(candidate.id)\", { (\(mutated)) })"
                 }.filter { !$0.isEmpty }.joined(separator: ", ")
-                replacement = "__SwiftMutationRuntime.select(original: { (\(original)) }, mutations: [\(alternatives)])"
+                replacement = "\(runtimeName).select(original: { (\(original)) }, mutations: [\(alternatives)])"
             }
             replacements.append((span, replacement))
         }
@@ -115,7 +116,12 @@ public struct SwiftMutationGenerator: Sendable {
         guard !included.isEmpty else { return (source, [], isolated) }
         var schema = String(decoding: output, as: UTF8.self)
         if !schema.contains("import Foundation") { schema = "import Foundation\n" + schema }
-        schema += "\n\n\(Self.runtimeSupport)\n"
+        // The schematized call sites are intentionally longer than the source expressions.
+        // Suppress only SwiftLint's line-length rule in this disposable mutation copy; this
+        // keeps build-tool plugins from rejecting generated code without changing project files.
+        schema = "// swiftlint:disable line_length\n" + schema
+        if !schema.hasSuffix("\n") { schema += "\n" }
+        schema += "\n\(Self.runtimeSupport(named: runtimeName))\n"
         return (schema, included, isolated)
     }
 
@@ -134,21 +140,30 @@ public struct SwiftMutationGenerator: Sendable {
         return makeSchema(source: source, candidates: [isolatedCandidate]).source
     }
 
-    private static let runtimeSupport = #"""
-    private enum __SwiftMutationRuntime {
-        static func evaluate<T>(_ id: String, mutated: @autoclosure () -> T, original: @autoclosure () -> T) -> T {
+    private static func runtimeName(for candidates: [MutationCandidate], source: String) -> String {
+        let identity = candidates.first?.source ?? SHA256Digest.hash(source)
+        return "MutestRuntime" + SHA256Digest.hash(identity).prefix(12).uppercased()
+    }
+
+    private static func runtimeSupport(named name: String) -> String {
+        runtimeSupportTemplate.replacingOccurrences(of: "MutestRuntime", with: name)
+    }
+
+    private static let runtimeSupportTemplate = #"""
+    public enum MutestRuntime {
+        public static func evaluate<T>(_ id: String, mutated: @autoclosure () -> T, original: @autoclosure () -> T) -> T {
             guard ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"] == id else { return original() }
             mark(id)
             return mutated()
         }
 
-        static func shouldRunOriginal(_ id: String) -> Bool {
+        public static func shouldRunOriginal(_ id: String) -> Bool {
             guard ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"] == id else { return true }
             mark(id)
             return false
         }
 
-        static func select<T>(original: () -> T, mutations: [(String, () -> T)]) -> T {
+        public static func select<T>(original: () -> T, mutations: [(String, () -> T)]) -> T {
             guard let activeID = ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"],
                   let mutation = mutations.first(where: { $0.0 == activeID }) else { return original() }
             mark(activeID)

@@ -9,7 +9,16 @@ enum ProjectFilePaths {
     ]
 
     static func isGenerated(_ relativePath: String) -> Bool {
-        relativePath.split(separator: "/").contains { generatedDirectories.contains(String($0)) }
+        let components = relativePath.split(separator: "/").map(String.init)
+        if let swiftPMIndex = components.firstIndex(of: ".swiftpm") {
+            // SwiftPM's shared Xcode schemes are project configuration, not build cache.
+            // Xcode needs them in the sandbox to build the selected package's test target.
+            let suffix = Array(components.dropFirst(swiftPMIndex + 1))
+            let sharedSchemes = ["xcode", "xcshareddata", "xcschemes"]
+            let isSharedSchemePath = sharedSchemes.starts(with: suffix) || suffix.starts(with: sharedSchemes)
+            if !isSharedSchemePath { return true }
+        }
+        return components.contains { generatedDirectories.contains($0) && $0 != ".swiftpm" }
     }
 }
 

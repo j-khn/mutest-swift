@@ -33,13 +33,20 @@ struct SourceMutatorTests {
 
     @Test("generates a standalone side effect removal")
     func sideEffect() {
-        let candidates = SwiftMutationGenerator().generate(source: "func write() { print(\"value\") }", relativePath: "Sources/Rule.swift")
+        let candidates = SwiftMutationGenerator().generate(source: "func write() { record(\"value\"); finish() }", relativePath: "Sources/Rule.swift")
         #expect(candidates.contains { $0.operatorID == .removeSideEffects })
+    }
+
+    @Test("skips calls that upstream treats as non-mutation candidates")
+    func skippedSideEffectCalls() {
+        let input = "func write() { print(\"value\"); assert(true); fatalError(\"stop\") }"
+        let candidates = SwiftMutationGenerator().generate(source: input, relativePath: "Sources/Rule.swift", operators: [.removeSideEffects])
+        #expect(candidates.isEmpty)
     }
 
     @Test("keeps safe statement mutations in a shared schema")
     func safeStatementSchema() {
-        let input = "func write() { print(\"first\"); print(\"second\") }"
+        let input = "func write() { record(\"first\"); record(\"second\") }"
         let candidates = SwiftMutationGenerator().generate(source: input, relativePath: "Sources/Rule.swift", operators: [.removeSideEffects])
         let schema = SwiftMutationGenerator().makeSchema(source: input, candidates: candidates)
         #expect(candidates.count == 2)
@@ -48,18 +55,11 @@ struct SourceMutatorTests {
         #expect(schema.isolated.isEmpty)
     }
 
-    @Test("isolates a statement mutation that occupies an implicit-return body")
-    func implicitReturnStatementIsolation() throws {
+    @Test("skips a call that is the implicit return of its function body")
+    func implicitReturnStatementSkipped() {
         let input = "func clamp(_ value: Int) -> Int { max(0, value) }"
         let candidates = SwiftMutationGenerator().generate(source: input, relativePath: "Sources/Rule.swift", operators: [.removeSideEffects])
-        let schema = SwiftMutationGenerator().makeSchema(source: input, candidates: candidates)
-        #expect(candidates.count == 1)
-        #expect(candidates.first?.requiresIsolation == true)
-        #expect(schema.included.isEmpty)
-        #expect(schema.isolated.count == 1)
-        let isolatedSchema = SwiftMutationGenerator().makeIsolatedSchema(source: input, candidate: try #require(candidates.first))
-        #expect(isolatedSchema.contains("shouldRunOriginal"))
-        #expect(isolatedSchema.contains("SWIFT_MUTATION_ACTIVATION_FILE"))
+        #expect(candidates.isEmpty)
     }
 
     @Test("swaps ternary branches while preserving the complete condition")
@@ -77,6 +77,8 @@ struct SourceMutatorTests {
         #expect(schema.included.count == 1)
         #expect(schema.source.contains("SWIFT_MUTATION_ID"))
         #expect(schema.source.contains("SWIFT_MUTATION_ACTIVATION_FILE"))
+        #expect(schema.source.hasPrefix("// swiftlint:disable line_length\n"))
+        #expect(schema.source.contains("public enum MutestRuntime"))
     }
 
     @Test("groups overlapping operator mutations into one runtime schema")
@@ -92,7 +94,17 @@ struct SourceMutatorTests {
         #expect(candidates.count > 1)
         #expect(schema.included == Set(candidates.map(\.id)))
         #expect(schema.isolated.isEmpty)
-        #expect(schema.source.contains("__SwiftMutationRuntime.select"))
+        #expect(schema.source.contains("MutestRuntime") && schema.source.contains(".select"))
+    }
+
+    @Test("generates public activation helpers for mutated default arguments")
+    func defaultArgumentSchemaAccess() {
+        let input = "public func enabled(_ value: Bool = true) -> Bool { value }"
+        let candidates = SwiftMutationGenerator().generate(source: input, relativePath: "Sources/Rule.swift", operators: [.boolean])
+        let schema = SwiftMutationGenerator().makeSchema(source: input, candidates: candidates)
+        #expect(schema.included.count == 1)
+        #expect(schema.source.contains("public enum MutestRuntime"))
+        #expect(schema.source.contains("public static func evaluate"))
     }
 
     @Test("SHA-256 output is stable and standard")

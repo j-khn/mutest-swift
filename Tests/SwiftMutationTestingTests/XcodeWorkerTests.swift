@@ -247,6 +247,47 @@ struct XcodeWorkerTests {
         #expect(first.hostBundleIDs == ["example.Fixture"])
     }
 
+    @Test("removes only stale Xcode test manifests before a fallback build")
+    func removeGeneratedManifests() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let products = root.appendingPathComponent("Build/Products")
+        try FileManager.default.createDirectory(at: products, withIntermediateDirectories: true)
+        let stale = products.appendingPathComponent("Fixture.xctestrun")
+        let keep = products.appendingPathComponent("build-description.json")
+        try Data("manifest".utf8).write(to: stale)
+        try Data("other".utf8).write(to: keep)
+
+        try XcodeTestArtifacts.removeGeneratedManifests(derivedData: root)
+
+        #expect(!FileManager.default.fileExists(atPath: stale.path))
+        #expect(FileManager.default.fileExists(atPath: keep.path))
+    }
+
+    @Test("copies shared SwiftPM Xcode schemes while excluding generated SwiftPM data")
+    func projectMetadataPaths() {
+        #expect(!ProjectFilePaths.isGenerated("ShareContacts/.swiftpm/xcode/xcshareddata/xcschemes/ShareContacts.xcscheme"))
+        #expect(ProjectFilePaths.isGenerated("ShareContacts/.swiftpm/xcode/xcuserdata/user.xcuserdatad/xcschemes/ShareContacts.xcscheme"))
+        #expect(ProjectFilePaths.isGenerated("ShareContacts/.swiftpm/checkouts/Dependency/Sources/Dependency.swift"))
+    }
+
+    @Test("a manifest for another test target is rejected with its discovered target details")
+    func unmatchedManifest() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let products = root.appendingPathComponent("builder/Build/Products")
+        try FileManager.default.createDirectory(at: products, withIntermediateDirectories: true)
+        let manifest: [String: Any] = ["TestConfigurations": [["TestTargets": [[
+            "BlueprintName": "OtherTests",
+            "TestBundlePath": "__TESTROOT__/OtherTests.xctest"
+        ]]]]]
+        let data = try PropertyListSerialization.data(fromPropertyList: manifest, format: .xml, options: 0)
+        try data.write(to: products.appendingPathComponent("Other.xctestrun"))
+
+        #expect(throws: MutationEngineError.self) {
+            try XcodeTestArtifacts.snapshot(derivedData: root.appendingPathComponent("builder"),
+                into: root.appendingPathComponent("worker"), testTarget: "FixtureTests")
+        }
+    }
+
     @Test("worker Xcode commands retain exact test scope and disable extra Xcode workers")
     func adapter() throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
