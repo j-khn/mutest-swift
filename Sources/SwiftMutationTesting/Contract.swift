@@ -25,6 +25,8 @@ public struct ProjectConfiguration: Codable, Sendable {
     public var path: String
     public var scheme: String?
     public var testTargets: [String]
+    /// Local Swift packages whose test source files belong to the selected Xcode scheme.
+    public var testPackageRoots: [String]
     public var destination: String?
 
     /// Compatibility accessor for configurations written before multiple targets were supported.
@@ -33,15 +35,16 @@ public struct ProjectConfiguration: Codable, Sendable {
         set { testTargets = newValue.map { [$0] } ?? [] }
     }
 
-    public init(kind: ProjectKind = .swiftPackage, path: String = ".", scheme: String? = nil, testTarget: String? = nil, destination: String? = nil, testTargets: [String]? = nil) {
+    public init(kind: ProjectKind = .swiftPackage, path: String = ".", scheme: String? = nil, testTarget: String? = nil, destination: String? = nil, testTargets: [String]? = nil, testPackageRoots: [String] = []) {
         self.kind = kind
         self.path = path
         self.scheme = scheme
         self.testTargets = Self.uniqueTargets(testTargets ?? testTarget.map { [$0] } ?? [])
+        self.testPackageRoots = Self.uniqueTargets(testPackageRoots)
         self.destination = destination
     }
 
-    private enum CodingKeys: String, CodingKey { case kind, path, scheme, testTarget, testTargets, destination }
+    private enum CodingKeys: String, CodingKey { case kind, path, scheme, testTarget, testTargets, testPackageRoots, destination }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -51,6 +54,7 @@ public struct ProjectConfiguration: Codable, Sendable {
         let targets = try values.decodeIfPresent([String].self, forKey: .testTargets)
         let legacyTarget = try values.decodeIfPresent(String.self, forKey: .testTarget)
         testTargets = Self.uniqueTargets(targets ?? legacyTarget.map { [$0] } ?? [])
+        testPackageRoots = Self.uniqueTargets(try values.decodeIfPresent([String].self, forKey: .testPackageRoots) ?? [])
         destination = try values.decodeIfPresent(String.self, forKey: .destination)
     }
 
@@ -60,6 +64,7 @@ public struct ProjectConfiguration: Codable, Sendable {
         try values.encode(path, forKey: .path)
         try values.encodeIfPresent(scheme, forKey: .scheme)
         if !testTargets.isEmpty { try values.encode(testTargets, forKey: .testTargets) }
+        if !testPackageRoots.isEmpty { try values.encode(testPackageRoots, forKey: .testPackageRoots) }
         try values.encodeIfPresent(destination, forKey: .destination)
     }
 

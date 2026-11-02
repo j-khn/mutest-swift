@@ -66,7 +66,7 @@ enum SwiftMutationTestingCLI {
         var parsed = Arguments(command: command)
         let valueOptions: Set<String> = [
             "--config", "--project", "--project-kind", "--mutation-source", "--source", "--test-file", "--target-file",
-            "--test-suite", "--suite", "--test-name", "--target-tests", "--test", "--scheme", "--test-target", "--target",
+            "--test-suite", "--suite", "--test-name", "--target-tests", "--test", "--scheme", "--test-target", "--target", "--test-package-root",
             "--destination", "--destination-simulator", "--xcodebuild-arg", "--operators", "--operator-tier", "--build-timeout",
             "--baseline-timeout", "--mutant-timeout", "--parallelism", "--workers", "--output", "--cache-path", "--minimum-score",
             "--maximum-score-drop", "--maximum-integrity-warnings", "--baseline-report"
@@ -128,6 +128,7 @@ enum SwiftMutationTestingCLI {
         if !arguments.all("--test").isEmpty { config.tests.tests = arguments.all("--test") }
         if let scheme = arguments.first("--scheme") { config.project.scheme = scheme }
         if !arguments.all("--test-target").isEmpty { config.project.testTargets = arguments.all("--test-target") }
+        if !arguments.all("--test-package-root").isEmpty { config.project.testPackageRoots = arguments.all("--test-package-root") }
         if let destination = arguments.first("--destination") { config.project.destination = destination }
         if let operators = arguments.first("--operators") {
             config.operators = try operators.split(separator: ",").map { name in
@@ -225,6 +226,7 @@ enum SwiftMutationTestingCLI {
       --project PATH                 Project root (default: .)
       --project-kind KIND            swift-package | xcode-project | xcode-workspace
       --scheme NAME                  Xcode scheme
+      --test-package-root PATH       Package whose test files belong to the scheme; repeatable
       --destination-simulator VALUE  iOS Simulator for Xcode tests, e.g. platform=iOS Simulator,name=iPhone 17,OS=latest
       --xcodebuild-arg NAME=VALUE    Xcode build setting; repeatable
 

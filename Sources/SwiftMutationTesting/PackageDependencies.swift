@@ -13,13 +13,16 @@ struct ProjectSandbox: Sendable {
 }
 
 enum PackageDependencyResolver {
-    static func discover(projectURL: URL, projectRoot: URL, kind: ProjectKind, logs: URL,
+    static func discover(projectURL: URL, projectRoot: URL, kind: ProjectKind, testPackageRoots: [URL] = [], logs: URL,
                          timeout: TimeInterval) throws -> PackageDependencyGraph {
         var queue: [URL]
         switch kind {
         case .swiftPackage: queue = [projectRoot]
         case .xcodeProject: queue = try localPackages(in: projectURL)
         case .xcodeWorkspace: queue = try localPackages(inWorkspace: projectURL)
+        }
+        if kind != .swiftPackage {
+            queue.append(contentsOf: testPackageRoots.map(\.standardizedFileURL))
         }
         var visited = Set<String>()
         var packages: [URL] = []

@@ -25,6 +25,10 @@ inputs:
     description: Test files to run, one path per line; adds matching tests from any test target in the selected scheme
     required: false
     default: ""
+  test-package-root:
+    description: Local Swift package folders containing selected test files, relative to the project root, one path per line; needed when the Xcode project does not list those package test files directly
+    required: false
+    default: ""
   test-suite:
     description: Test suite names, one per line; adds matching tests from any test target in the selected scheme
     required: false
@@ -158,6 +162,7 @@ runs:
         INPUT_MUTATION_SOURCE: ${{ inputs.mutation-source }}
         INPUT_SOURCE: ${{ inputs.source }}
         INPUT_TEST_FILE: ${{ inputs.test-file }}
+        INPUT_TEST_PACKAGE_ROOT: ${{ inputs.test-package-root }}
         INPUT_TEST_SUITE: ${{ inputs.test-suite }}
         INPUT_SUITE: ${{ inputs.suite }}
         INPUT_TEST_NAME: ${{ inputs.test-name }}
@@ -204,6 +209,7 @@ runs:
         [[ -n "$INPUT_SCHEME" ]] && args+=(--scheme "$INPUT_SCHEME")
         while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-target "$value"); done <<< "$INPUT_TEST_TARGET"
         while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-target "$value"); done <<< "$INPUT_TEST_TARGETS"
+        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-package-root "$value"); done <<< "$INPUT_TEST_PACKAGE_ROOT"
         if [[ -n "$INPUT_CACHE_PATH" ]]; then
           cache_path="$INPUT_CACHE_PATH"
           project_root="$project_path"

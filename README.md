@@ -66,6 +66,7 @@ For an Xcode project or workspace, the tool asks which scheme, test scope, and s
 | `PROJECT` | iOS/iPadOS package folder with an enclosing Xcode project/workspace, `.xcodeproj`, `.xcworkspace`, or folder containing one; defaults to `.` | Project to test. |
 | `--scheme NAME` | Xcode scheme | Selects an Xcode scheme. Asked interactively if missing. |
 | `--test-target NAME` | Xcode test target; repeatable | Runs every test in each named target. |
+| `--test-package-root PATH` | Local Swift package folder; repeatable | Maps test files from a package that is part of the selected Xcode scheme. The launcher detects this automatically when you select a package scheme. |
 | `--destination-simulator VALUE` | Xcode simulator destination string | Chooses the simulator. Asked interactively if missing. |
 | `--workers COUNT` | Positive number; default `2` | Runs up to this many mutants at once. |
 | `--mutation-source PATH` | Swift production source file or folder; repeatable | Limits where mutations are made. No value means all discovered source files. |
@@ -84,6 +85,8 @@ For an Xcode project or workspace, the tool asks which scheme, test scope, and s
 An Xcode scheme is the build and test plan. A test target is one test bundle inside that scheme. Every target and test selected below must be included in the scheme's test plan.
 
 Each `--test-target` adds **all tests in that target**. Each file, suite, or name option adds only its matches, even when they belong to other targets in the same scheme. All filters are combined with **OR**; duplicates run once. A file selects every test in that file; use `--test-name` to select individual tests. If a selector name matches multiple targets, qualify it as `TargetName::selector`.
+
+When test files belong to a local Swift package inside an Xcode project, `./run` passes the selected package to test discovery automatically. For a direct CLI command, add `--test-package-root /path/to/the/package` so the tool can map its test files to their Swift package test target.
 
 Examples:
 
@@ -149,6 +152,7 @@ Replace `MyApp` and the simulator name with values from your project and runner.
 | `project-kind` | `swift-package` (default), `xcode-project`, `xcode-workspace` | Project type. |
 | `scheme`, `destination-simulator` | Required for Xcode projects | Xcode scheme and simulator destination; match `--scheme` and `--destination-simulator`. |
 | `test-target` | One Xcode test target per line; optional | Runs every test in each listed target. Omit it to use the scheme's full test plan when there are no selectors. |
+| `test-package-root` | One package path per line; optional | Maps test files from local Swift packages not listed directly in the Xcode project. Relative to the project root. |
 | `mutation-source` | One relative path per line; blank means all discovered source | Limits mutation locations; matches repeatable `--mutation-source`. |
 | `test-file`, `test-suite`, `test-name` | One selector per line; blank means no filter | Adds matching tests from any target included in the chosen scheme. Selectors combine with target-wide selections; you do not need to name their targets separately. |
 | `operators` | Comma-separated operator names; blank means all available | Limits mutation types; matches `--operators`. |

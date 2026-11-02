@@ -56,6 +56,7 @@ Examples:
         "A file, suite, or test adds matches from any target in the chosen scheme. Each --test-target adds every test in that target; filters and targets are combined, duplicates run once.",
     )
     test_group.add_argument("--test-file", dest="test_files", action="append", default=[], metavar="PATH", help="file containing tests; repeat once per file")
+    test_group.add_argument("--test-package-root", dest="test_package_roots", action="append", default=[], metavar="PATH", help="local Swift package containing selected test files; repeat for more packages")
     test_group.add_argument("--target-file", dest="test_files", action="append", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     test_group.add_argument("--test-suite", dest="suite", action="append", default=[], metavar="NAME", help="suite grouping name or @Suite display name; repeat once per suite")
     test_group.add_argument("--suite", dest="suite", action="append", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
@@ -355,6 +356,12 @@ def execute_task(task: dict[str, str], args: argparse.Namespace, destination: st
         command += ["--scheme", task["scheme"]]
         for target in task.get("targets", []):
             command += ["--test-target", target]
+        package_roots = [task.get("test_package_root", ""), *args.test_package_roots]
+        for package_root in dict.fromkeys(path for path in package_roots if path):
+            package_path = Path(package_root).expanduser()
+            if not package_path.is_absolute():
+                package_path = Path(task["path"]).parent / package_path
+            command += ["--test-package-root", str(package_path.resolve())]
         command += ["--destination-simulator", destination or ""]
     command += common_arguments(
         args,
@@ -461,6 +468,7 @@ def run(args: argparse.Namespace) -> int:
     if package:
         package_path, _ = package
         task["source"] = str(package_path.relative_to(project_path.parent))
+        task["test_package_root"] = str(package_path)
         print(f"[run] Running package {package_path.name} through Xcode on the selected simulator.", flush=True)
     tasks = [task]
 

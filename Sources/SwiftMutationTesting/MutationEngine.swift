@@ -234,6 +234,9 @@ public struct MutationEngine: Sendable {
             projectURL: projectURL,
             projectRoot: root,
             kind: configuration.project.kind,
+            testPackageRoots: configuration.project.testPackageRoots.map {
+                URL(fileURLWithPath: $0, relativeTo: root).standardizedFileURL
+            },
             logs: logs,
             timeout: TimeInterval(configuration.timeouts.buildSeconds)
         )
