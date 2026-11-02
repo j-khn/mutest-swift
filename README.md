@@ -41,7 +41,7 @@ Requirements: macOS 14 or newer, Swift 6.0 or newer, and Python 3. Install Xcode
 ```sh
 mkdir -p ~/Tools
 cd ~/Tools
-git clone https://github.com/jamilkhan55/mutest-swift.git
+git clone https://github.com/j-khn/mutest-swift.git
 cd mutest-swift
 ./run /path/to/MyApp.xcodeproj
 ```
@@ -117,7 +117,7 @@ jobs:
       - name: Check Xcode
         run: xcodebuild -version
       - name: Run mutation tests
-        uses: jamilkhan55/mutest-swift/.github/actions/run-mutation-testing@main
+        uses: j-khn/mutest-swift/.github/actions/run-mutation-testing@main
         with:
           project-path: MyApp.xcodeproj
           project-kind: xcode-project
