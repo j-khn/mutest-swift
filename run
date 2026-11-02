@@ -7,8 +7,10 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -251,9 +253,14 @@ def simulator_destinations() -> list[tuple[str, str]]:
         version = tuple(int(part or 0) for part in match.groups()) if match else (0, 0, 0)
         for device in devices:
             device_type = device.get("deviceTypeIdentifier", "")
+            name = device.get("name", "")
+            # Worker simulators are temporary clones owned by mutest-swift. They
+            # must not be offered as the user's base destination on the next run.
+            if name.startswith("mutest-") and re.search(r"-worker-\d+$", name):
+                continue
             if device.get("isAvailable") is False or not any(kind in device_type for kind in ("iPhone", "iPad")):
                 continue
-            name = f"{device.get('name', 'iPhone')} (iOS {'.'.join(map(str, version[:2]))})"
+            name = f"{name or 'iPhone'} (iOS {'.'.join(map(str, version[:2]))})"
             destination = f"platform=iOS Simulator,id={device['udid']}"
             entries.append((version, name, destination))
     if not entries:
@@ -304,7 +311,29 @@ def execute_task(task: dict[str, str], args: argparse.Namespace, destination: st
     title = task.get("name", task["path"])
     print(f"\n[run] Starting {title}…", flush=True)
     executable = ["swift", "run", "--package-path", str(ROOT), "swift-mutation-testing", *command]
-    return subprocess.run(executable).returncode
+    process = subprocess.Popen(executable, start_new_session=True)
+    try:
+        return process.wait()
+    except KeyboardInterrupt:
+        print("\n[run] Cancelling mutation testing; waiting for simulator cleanup…", flush=True)
+        previous_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            try:
+                os.killpg(process.pid, signal.SIGINT)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            # `swift run` can exit before its executable finishes handling the
+            # cancellation. Keep the launcher alive until that process group is gone.
+            while True:
+                try:
+                    os.killpg(process.pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.2)
+        finally:
+            signal.signal(signal.SIGINT, previous_handler)
+        return 130
 
 
 def run(args: argparse.Namespace) -> int:
