@@ -22,25 +22,55 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         prog="./run",
         description="Run mutest-swift locally. Xcode settings are detected and prompted for when missing.",
-        epilog="Examples:\n  ./run /path/to/App.xcodeproj\n  ./run /path/to/App.xcodeproj --scheme App --target AppTests --destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'\n  ./run /path/to/App.xcodeproj --parallelism 2 --source Modules/Checkout/Sources/Checkout --target-file CheckoutTests.swift --target-tests checkoutTotal",
+        epilog="""Xcode test selection:
+  With no test selectors or --test-target, run the scheme's full test plan.
+  Repeat --test-target to run all tests from multiple targets.
+  Add --test-file, --test-suite, and/or --test-name to add only matching tests
+  from any test target in the chosen scheme. These selections are combined;
+  duplicates run once. If a name is ambiguous, use TargetName::selector.
+
+Examples:
+  ./run /path/to/App.xcodeproj
+  ./run /path/to/App.xcodeproj --scheme App --test-target AppTests --destination-simulator 'platform=iOS Simulator,name=iPhone 17,OS=latest'
+  ./run /path/to/App.xcodeproj --test-target A --test-target B --test-file CTests.swift --test-suite 'ETests::Suite1' --test-name 'DTests::testOne'
+  ./run /path/to/App.xcodeproj --workers 2 --mutation-source A.swift --mutation-source B.swift --test-file ATests.swift --test-file BTests.swift""",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     result.add_argument("project", nargs="?", default=".", help="iOS/iPadOS package inside an Xcode project, .xcodeproj, .xcworkspace, or folder containing one (default: current folder)")
-    result.add_argument("--scheme", help="Xcode scheme; prompted if missing")
-    result.add_argument("--target", "--test-target", dest="test_target", help="Xcode test target name (not a source file); omit for the scheme's full test plan")
-    result.add_argument("--destination", help="Xcode destination; prompted if missing")
-    result.add_argument("--parallelism", "--parallelization", type=positive_int, default=2, help="worker count (default: 2)")
-    result.add_argument("--source", action="append", default=[], help="source file/folder to mutate; repeatable")
-    result.add_argument("--target-file", "--test-file", dest="test_files", action="append", default=[], help="test file selector; repeatable")
-    result.add_argument("--target-tests", "--test", dest="tests", action="append", default=[], help="test name selector; repeatable")
-    result.add_argument("--suite", action="append", default=[], help="test suite selector; repeatable")
-    result.add_argument("--operators", help="comma-separated operators")
-    result.add_argument("--operator-tier", default="experimental", choices=("experimental", "all"), help="operator tier (default: experimental)")
-    result.add_argument("--xcodebuild-arg", action="append", default=[], help="Xcode build setting NAME=VALUE; repeatable")
-    result.add_argument("--output", help="report directory")
-    result.add_argument("--no-cache", action="store_true", help="disable cached verdicts")
-    result.add_argument("--no-resume", action="store_true", help="do not resume prior verdicts")
-    result.add_argument("--validate", action="store_true", help="check project and selectors without running mutation tests")
+    xcode_group = result.add_argument_group("Xcode run")
+    xcode_group.add_argument("--scheme", help="Xcode scheme; prompted if missing")
+    xcode_group.add_argument("--test-target", dest="test_targets", action="append", default=[], metavar="NAME", help="Xcode test target to run in full; repeat for more targets")
+    xcode_group.add_argument("--target", dest="test_targets", action="append", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    xcode_group.add_argument("--destination-simulator", dest="destination", metavar="VALUE", help="iOS Simulator for Xcode tests, e.g. 'platform=iOS Simulator,name=iPhone 17,OS=latest' (prompted if omitted)")
+    xcode_group.add_argument("--destination", dest="destination", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    xcode_group.add_argument("--workers", dest="parallelism", type=positive_int, default=2, metavar="COUNT", help="number of simultaneous mutation workers (default: 2)")
+    for alias in ("--parallelism", "--parallelization"):
+        xcode_group.add_argument(alias, dest="parallelism", type=positive_int, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+
+    mutation_group = result.add_argument_group("Code to mutate")
+    mutation_group.add_argument("--mutation-source", dest="source", action="append", default=[], metavar="PATH", help="production Swift file/folder; repeat once per path")
+    mutation_group.add_argument("--source", dest="source", action="append", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+
+    test_group = result.add_argument_group(
+        "Tests to run",
+        "A file, suite, or test adds matches from any target in the chosen scheme. Each --test-target adds every test in that target; filters and targets are combined, duplicates run once.",
+    )
+    test_group.add_argument("--test-file", dest="test_files", action="append", default=[], metavar="PATH", help="file containing tests; repeat once per file")
+    test_group.add_argument("--target-file", dest="test_files", action="append", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    test_group.add_argument("--test-suite", dest="suite", action="append", default=[], metavar="NAME", help="suite grouping name or @Suite display name; repeat once per suite")
+    test_group.add_argument("--suite", dest="suite", action="append", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    test_group.add_argument("--test-name", dest="tests", action="append", default=[], metavar="NAME", help="test function or custom test name; repeat once per test")
+    for alias in ("--test", "--target-tests"):
+        test_group.add_argument(alias, dest="tests", action="append", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+
+    options_group = result.add_argument_group("Other options")
+    options_group.add_argument("--operators", help="comma-separated operators")
+    options_group.add_argument("--operator-tier", default="experimental", choices=("experimental", "all"), help="operator tier (default: experimental)")
+    options_group.add_argument("--xcodebuild-arg", action="append", default=[], help="Xcode build setting NAME=VALUE; repeatable")
+    options_group.add_argument("--output", help="report directory")
+    options_group.add_argument("--no-cache", action="store_true", help="disable cached verdicts")
+    options_group.add_argument("--no-resume", action="store_true", help="do not resume prior verdicts")
+    options_group.add_argument("--validate", action="store_true", help="check project and selectors without running mutation tests")
     return result
 
 
@@ -74,6 +104,31 @@ def ask_choice(title: str, choices: list[str], default_first: bool = False) -> s
         if answer.isdigit() and 1 <= int(answer) <= len(choices):
             return choices[int(answer) - 1]
         print(f"Enter a number from 1 to {len(choices)}.")
+
+
+def ask_multiple_choices(title: str, choices: list[str], default_first: bool = True) -> list[str]:
+    choices = list(dict.fromkeys(choice for choice in choices if choice))
+    if not choices:
+        raise RuntimeError(f"Could not find choices for {title.lower()}.")
+    if len(choices) == 1:
+        return choices
+    if not sys.stdin.isatty():
+        raise RuntimeError(f"{title} is ambiguous. Pass one or more --test-target options.")
+    print(title)
+    for index, choice in enumerate(choices, 1):
+        print(f"  {index}- {choice}")
+    default = " [1]" if default_first else ""
+    while True:
+        answer = input(f"Choose number(s) separated by commas{default}: ").strip()
+        if not answer and default_first:
+            return [choices[0]]
+        try:
+            indices = [int(part.strip()) for part in answer.split(",")]
+        except ValueError:
+            indices = []
+        if indices and all(1 <= index <= len(choices) for index in indices):
+            return list(dict.fromkeys(choices[index - 1] for index in indices))
+        print(f"Enter one or more numbers from 1 to {len(choices)}, separated by commas.")
 
 
 def discover_project(raw_path: str) -> tuple[str, Path]:
@@ -277,9 +332,9 @@ def choose_destination() -> str:
 
 
 def common_arguments(args: argparse.Namespace, include_xcodebuild_args: bool = True, default_source: str | None = None) -> list[str]:
-    command = ["--parallelism", str(args.parallelism), "--operator-tier", args.operator_tier]
+    command = ["--workers", str(args.parallelism), "--operator-tier", args.operator_tier]
     source_values = args.source or ([default_source] if default_source else [])
-    selectors = [("--source", source_values), ("--test-file", args.test_files), ("--suite", args.suite), ("--test", args.tests)]
+    selectors = [("--mutation-source", source_values), ("--test-file", args.test_files), ("--test-suite", args.suite), ("--test-name", args.tests)]
     if include_xcodebuild_args:
         selectors.append(("--xcodebuild-arg", args.xcodebuild_arg))
     for option, values in selectors:
@@ -298,9 +353,9 @@ def execute_task(task: dict[str, str], args: argparse.Namespace, destination: st
     command = ["validate" if args.validate else "run", "--project", task["path"], "--project-kind", task["kind"]]
     if task["kind"] != "swift-package":
         command += ["--scheme", task["scheme"]]
-        if task.get("target"):
-            command += ["--test-target", task["target"]]
-        command += ["--destination", destination or ""]
+        for target in task.get("targets", []):
+            command += ["--test-target", target]
+        command += ["--destination-simulator", destination or ""]
     command += common_arguments(
         args,
         include_xcodebuild_args=task["kind"] != "swift-package",
@@ -337,16 +392,16 @@ def execute_task(task: dict[str, str], args: argparse.Namespace, destination: st
 
 
 def run(args: argparse.Namespace) -> int:
-    if args.test_target and ("/" in args.test_target or "\\" in args.test_target or args.test_target.lower().endswith(".swift")):
+    if any("/" in target or "\\" in target or target.lower().endswith(".swift") for target in args.test_targets):
         raise RuntimeError(
-            "--target must be a test target name, not a Swift file or folder. "
-            "Use --source PATH for the code file to mutate. Leave --target out to choose a test scope from the menu."
+            "--test-target values must be Xcode test target names, not Swift files or folders. "
+            "Use --mutation-source PATH for code files."
         )
 
     print(f"[run] Detecting project at {Path(args.project).expanduser()}…", flush=True)
     kind, project_path = discover_project(args.project)
     if kind == "swift-package":
-        if any((args.scheme, args.test_target, args.destination)):
+        if any((args.scheme, args.test_targets, args.destination)):
             print("Note: scheme, test target, and destination are only used for Xcode projects.")
         task = {"kind": kind, "path": str(project_path), "name": project_path.name}
         if args.output:
@@ -376,31 +431,33 @@ def run(args: argparse.Namespace) -> int:
     # A scheme can share its name with a local Swift package; routing that entry to
     # `swift test` runs on macOS and cannot use Xcode-only plugin APIs or a simulator.
     package = package_map.get(selected_scheme)
-    test_target = args.test_target
-    if not test_target:
-        choices_for_scheme = package[1] if package else test_targets(project_path, info, selected_scheme)
-        if args.test_files or args.suite or args.tests:
-            if not choices_for_scheme:
-                raise RuntimeError(f"Cannot apply test selectors without a test target for scheme '{selected_scheme}'. Pass --target NAME.")
-            test_target = ask_choice("Which test target do you want to run?", choices_for_scheme)
-        else:
-            all_targets = "All test targets in scheme"
-            selected_scope = ask_choice("Which test scope do you want to run?", [all_targets, *choices_for_scheme], default_first=True)
-            if selected_scope != all_targets:
-                test_target = selected_scope
-    else:
-        choices_for_scheme = package[1] if package else test_targets(project_path, info, selected_scheme)
-        if choices_for_scheme and test_target not in choices_for_scheme:
-            choices = ", ".join(choices_for_scheme)
-            raise RuntimeError(
-                f"Test target '{test_target}' is not part of scheme '{selected_scheme}'. "
-                f"Choose one of: {choices}."
-            )
+    choices_for_scheme = package[1] if package else test_targets(project_path, info, selected_scheme)
+    selected_targets = list(dict.fromkeys(args.test_targets))
+    unknown_targets = [target for target in selected_targets if choices_for_scheme and target not in choices_for_scheme]
+    if unknown_targets:
+        choices = ", ".join(choices_for_scheme)
+        raise RuntimeError(
+            f"Test target(s) {', '.join(repr(target) for target in unknown_targets)} are not in scheme '{selected_scheme}'. "
+            f"Choose from: {choices}."
+        )
+    has_test_selectors = bool(args.test_files or args.suite or args.tests)
+    if not selected_targets:
+        if has_test_selectors:
+            choices = ["No full test targets", *choices_for_scheme]
+            selected_scope = ask_multiple_choices("Which full test target(s), if any, should be added?", choices)
+            selected_targets = [target for target in selected_scope if target != choices[0]]
+        elif choices_for_scheme:
+            choices = ["All test targets in scheme", *choices_for_scheme]
+            selected_scope = ask_multiple_choices("Which test target(s) do you want to run?", choices)
+            selected_targets = [] if choices[0] in selected_scope else selected_scope
 
-    task = {"kind": kind, "path": str(project_path), "scheme": selected_scheme,
-            "name": f"{selected_scheme} / {test_target}" if test_target else f"{selected_scheme} / all test targets"}
-    if test_target:
-        task["target"] = test_target
+    task = {"kind": kind, "path": str(project_path), "scheme": selected_scheme, "targets": selected_targets}
+    if selected_targets:
+        task["name"] = f"{selected_scheme} / {', '.join(selected_targets)}"
+    elif has_test_selectors:
+        task["name"] = f"{selected_scheme} / selected tests"
+    else:
+        task["name"] = f"{selected_scheme} / all test targets"
     if package:
         package_path, _ = package
         task["source"] = str(package_path.relative_to(project_path.parent))
@@ -414,10 +471,12 @@ def run(args: argparse.Namespace) -> int:
             print("[run] Finding available iOS simulators…", flush=True)
         destination = args.destination or choose_destination()
     if kind != "swift-package":
-        if args.test_files or args.suite or args.tests:
-            print(f"Test scope: selected tests in {test_target}", flush=True)
-        elif test_target:
-            print(f"Test scope: all tests in target {test_target}", flush=True)
+        if has_test_selectors and selected_targets:
+            print(f"Test scope: selected tests plus all tests in {', '.join(selected_targets)}", flush=True)
+        elif has_test_selectors:
+            print("Test scope: selected files, suites, and tests only", flush=True)
+        elif selected_targets:
+            print(f"Test scope: all tests in {', '.join(selected_targets)}", flush=True)
         else:
             print("Test scope: all test targets in the selected scheme's test plan", flush=True)
 

@@ -23,6 +23,15 @@ struct ContractTests {
         #expect(config.output.formats == ["json"])
     }
 
+    @Test("reads old single-target configuration and new multiple-target configuration")
+    func testTargetConfigurationCompatibility() throws {
+        let old = try JSONDecoder().decode(ProjectConfiguration.self, from: Data(#"{"kind":"xcodeProject","path":"App.xcodeproj","testTarget":"LegacyTests"}"#.utf8))
+        let current = try JSONDecoder().decode(ProjectConfiguration.self, from: Data(#"{"kind":"xcodeProject","path":"App.xcodeproj","testTargets":["ContactsTests","UITests"]}"#.utf8))
+
+        #expect(old.testTargets == ["LegacyTests"])
+        #expect(current.testTargets == ["ContactsTests", "UITests"])
+    }
+
     @Test("counts killed and activated timeouts as detected")
     func detectedScore() {
         let records = [

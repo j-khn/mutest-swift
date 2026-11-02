@@ -76,14 +76,16 @@ public enum MutationReportWriter {
             output += "- **Source files selected:** \(report.scope.sources.count)\n"
             output += "- **Mutants generated:** \(report.summary.generated)\n"
             let scopeDescription: String
+            let wholeTargets = report.scope.tests.filter { report.scope.testTargets.contains($0) }.sorted()
+            let explicitTests = report.scope.tests.filter { !report.scope.testTargets.contains($0) }.sorted()
             if report.scope.allTests {
-                if let target = runDetails.testTarget, !target.isEmpty {
-                    scopeDescription = "All tests in target `\(target)`"
-                } else {
-                    scopeDescription = "All tests configured for the package or Xcode scheme"
-                }
+                scopeDescription = "All tests configured for the package or Xcode scheme"
+            } else if !wholeTargets.isEmpty && !explicitTests.isEmpty {
+                scopeDescription = "All tests in \(wholeTargets.map { "`\($0)`" }.joined(separator: ", ")) plus \(explicitTests.count) selected test(s)"
+            } else if !wholeTargets.isEmpty {
+                scopeDescription = "All tests in \(wholeTargets.map { "`\($0)`" }.joined(separator: ", "))"
             } else {
-                scopeDescription = "\(report.scope.tests.count) selected test(s)"
+                scopeDescription = "\(explicitTests.count) selected test(s) across \(report.scope.testTargets.count) target(s)"
             }
             if let count = runDetails.baselineTestCount {
                 output += "- **Baseline tests per worker:** \(count)\n"
@@ -106,8 +108,8 @@ public enum MutationReportWriter {
             output += "- **Workers:** \(runDetails.activeWorkerCount) active / \(runDetails.requestedWorkerCount) requested\n"
             output += String(format: "- **Simulator setup:** %.2fs\n", runDetails.simulatorSetupSeconds)
             output += "- **Test selection:** \(scopeDescription)\n"
-            if !report.scope.allTests, !report.scope.tests.isEmpty {
-                for test in report.scope.tests.sorted() { output += "  - `\(test)`\n" }
+            if !report.scope.allTests, !explicitTests.isEmpty {
+                for test in explicitTests { output += "  - `\(test)`\n" }
             }
             output += "- **Mutant test runs:** \(runDetails.mutantTestRunCount) (a run may stop after an active mutant is killed)\n"
             output += "- **Total time:** \(formatDuration(runDetails.totalDurationSeconds))\n\n"

@@ -41,7 +41,7 @@ struct XcodeSimulatorTemplate: Sendable {
 
     static func resolve(destination: String?, inventory: SimulatorInventory) throws -> Self? {
         guard let destination, !destination.isEmpty else {
-            throw MutationEngineError.invalidProject("Xcode mutation testing requires --destination. Supply an installed iOS Simulator name or ID.")
+            throw MutationEngineError.invalidProject("Xcode mutation testing requires --destination-simulator. Supply an installed iOS Simulator name or ID.")
         }
         var fields: [String: String] = [:]
         for part in destination.split(separator: ",") {
@@ -76,7 +76,7 @@ struct XcodeSimulatorTemplate: Sendable {
 
     static func load(destination: String?, logs: URL) throws -> Self? {
         guard let destination, !destination.isEmpty else {
-            throw MutationEngineError.invalidProject("Xcode mutation testing requires --destination.")
+            throw MutationEngineError.invalidProject("Xcode mutation testing requires --destination-simulator.")
         }
         if !destination.contains("iOS Simulator") {
             mutationLog("Xcode destination is not an iOS Simulator; using one worker.")

@@ -24,15 +24,49 @@ public struct ProjectConfiguration: Codable, Sendable {
     public var kind: ProjectKind
     public var path: String
     public var scheme: String?
-    public var testTarget: String?
+    public var testTargets: [String]
     public var destination: String?
 
-    public init(kind: ProjectKind = .swiftPackage, path: String = ".", scheme: String? = nil, testTarget: String? = nil, destination: String? = nil) {
+    /// Compatibility accessor for configurations written before multiple targets were supported.
+    public var testTarget: String? {
+        get { testTargets.first }
+        set { testTargets = newValue.map { [$0] } ?? [] }
+    }
+
+    public init(kind: ProjectKind = .swiftPackage, path: String = ".", scheme: String? = nil, testTarget: String? = nil, destination: String? = nil, testTargets: [String]? = nil) {
         self.kind = kind
         self.path = path
         self.scheme = scheme
-        self.testTarget = testTarget
+        self.testTargets = Self.uniqueTargets(testTargets ?? testTarget.map { [$0] } ?? [])
         self.destination = destination
+    }
+
+    private enum CodingKeys: String, CodingKey { case kind, path, scheme, testTarget, testTargets, destination }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try values.decode(ProjectKind.self, forKey: .kind)
+        path = try values.decode(String.self, forKey: .path)
+        scheme = try values.decodeIfPresent(String.self, forKey: .scheme)
+        let targets = try values.decodeIfPresent([String].self, forKey: .testTargets)
+        let legacyTarget = try values.decodeIfPresent(String.self, forKey: .testTarget)
+        testTargets = Self.uniqueTargets(targets ?? legacyTarget.map { [$0] } ?? [])
+        destination = try values.decodeIfPresent(String.self, forKey: .destination)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(kind, forKey: .kind)
+        try values.encode(path, forKey: .path)
+        try values.encodeIfPresent(scheme, forKey: .scheme)
+        if !testTargets.isEmpty { try values.encode(testTargets, forKey: .testTargets) }
+        try values.encodeIfPresent(destination, forKey: .destination)
+    }
+
+    private static func uniqueTargets(_ targets: [String]) -> [String] {
+        var result: [String] = []
+        for target in targets where !target.isEmpty && !result.contains(target) { result.append(target) }
+        return result
     }
 }
 
@@ -280,8 +314,32 @@ public struct MutationReport: Codable, Sendable {
         public init(name: String, version: String, tierPolicy: String) { self.name = name; self.version = version; self.tierPolicy = tierPolicy }
     }
     public struct Scope: Codable, Sendable {
-        public var sources: [String]; public var tests: [String]; public var allTests: Bool
-        public init(sources: [String], tests: [String], allTests: Bool) { self.sources = sources; self.tests = tests; self.allTests = allTests }
+        public var sources: [String]
+        public var tests: [String]
+        public var allTests: Bool
+        public var testTargets: [String]
+
+        public init(sources: [String], tests: [String], allTests: Bool, testTargets: [String] = []) {
+            self.sources = sources; self.tests = tests; self.allTests = allTests; self.testTargets = testTargets
+        }
+
+        private enum CodingKeys: String, CodingKey { case sources, tests, allTests, testTargets }
+
+        public init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            sources = try values.decode([String].self, forKey: .sources)
+            tests = try values.decode([String].self, forKey: .tests)
+            allTests = try values.decode(Bool.self, forKey: .allTests)
+            testTargets = try values.decodeIfPresent([String].self, forKey: .testTargets) ?? []
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var values = encoder.container(keyedBy: CodingKeys.self)
+            try values.encode(sources, forKey: .sources)
+            try values.encode(tests, forKey: .tests)
+            try values.encode(allTests, forKey: .allTests)
+            if !testTargets.isEmpty { try values.encode(testTargets, forKey: .testTargets) }
+        }
     }
 
     public init(runId: String = UUID().uuidString, engine: EngineIdentity = .init(name: "mutest-swift", version: "0.3.0", tierPolicy: "all operators experimental pending campaign"), scope: Scope, mutants: [MutantRecord], integrityWarnings: [IntegrityWarning] = [], qualityGate: QualityGateResult? = nil, timings: MutationTimings? = nil) {

@@ -262,17 +262,22 @@ public struct MutationEngine: Sendable {
         let selection = try SwiftTestSelectorResolver().resolve(
             projectRoot: root,
             selection: configuration.tests,
-            testTarget: configuration.project.testTarget,
+            testTargets: configuration.project.testTargets,
+            targetByTestFile: dependencyGraph.testTargetByFile,
             forXcode: configuration.project.kind != .swiftPackage
         )
         timings.testDiscoverySeconds = Date().timeIntervalSince(testDiscoveryStarted)
         let testScopeLabel: String
-        if !selection.allTests {
+        if !configuration.tests.isEmpty {
+            testScopeLabel = "selected tests (plus any complete targets)"
+        } else if !selection.targets.isEmpty {
+            testScopeLabel = "all tests in targets: \(selection.targets.joined(separator: ", "))"
+        } else if !selection.allTests {
             testScopeLabel = "selected tests"
         } else if configuration.project.kind == .swiftPackage {
             testScopeLabel = "full package test suite"
-        } else if let target = configuration.project.testTarget, !target.isEmpty {
-            testScopeLabel = "full test target: \(target)"
+        } else if !selection.targets.isEmpty {
+            testScopeLabel = "full test targets: \(selection.targets.joined(separator: ", "))"
         } else {
             testScopeLabel = "full scheme test plan"
         }
@@ -793,6 +798,7 @@ public struct MutationEngine: Sendable {
             baseline.scope.sources.sorted() == selectedSources
                 && baseline.scope.tests.sorted() == selection.identifiers.sorted()
                 && baseline.scope.allTests == selection.allTests
+                && baseline.scope.testTargets.sorted() == selection.targets.sorted()
         } ?? false
         let gate = QualityGateEvaluator.evaluate(
             summary: summary,
@@ -808,10 +814,10 @@ public struct MutationEngine: Sendable {
         try? FileManager.default.removeItem(at: sandboxLayout.container)
         sandboxRemoved = true
         timings.cleanupSeconds += Date().timeIntervalSince(cleanupStarted)
-        let report = MutationReport(scope: .init(sources: selectedSources, tests: selection.identifiers, allTests: selection.allTests), mutants: orderedRecords, integrityWarnings: warnings, qualityGate: gate, timings: timings)
+        let report = MutationReport(scope: .init(sources: selectedSources, tests: selection.identifiers, allTests: selection.allTests, testTargets: selection.targets), mutants: orderedRecords, integrityWarnings: warnings, qualityGate: gate, timings: timings)
         let runMetricsSnapshot = runMetrics.snapshot()
         let runDetails = MutationRunSummaryDetails(
-            testTarget: configuration.project.testTarget,
+            testTarget: selection.targets.isEmpty ? nil : selection.targets.joined(separator: ", "),
             baselineTestCount: xcodeExecution?.baselineCounts.first ?? runMetricsSnapshot.baselineTestCount,
             mutantTestRunCount: xcodeExecution?.mutantTestRunCount ?? runMetricsSnapshot.mutantTestRunCount,
             totalDurationSeconds: Date().timeIntervalSince(runStartedAt),
@@ -862,11 +868,6 @@ public struct MutationEngine: Sendable {
             guard projectURL.pathExtension == "xcodeproj", FileManager.default.fileExists(atPath: projectURL.path) else { throw MutationEngineError.invalidProject("Xcode project runs require an existing .xcodeproj path.") }
         case .xcodeWorkspace:
             guard projectURL.pathExtension == "xcworkspace", FileManager.default.fileExists(atPath: projectURL.path) else { throw MutationEngineError.invalidProject("Xcode workspace runs require an existing .xcworkspace path.") }
-        }
-        if configuration.project.kind != .swiftPackage,
-           configuration.project.testTarget?.isEmpty ?? true,
-           !configuration.tests.isEmpty {
-            throw MutationEngineError.invalidSelection("Xcode test-file, suite, and test selectors require --test-target. Omit all test selectors to run the selected scheme's full test plan.")
         }
     }
 

@@ -39,13 +39,20 @@ struct XcodeTestArtifacts: Sendable {
     var hostBundleIDs: [String]
 
     static func snapshot(derivedData: URL, into directory: URL, testTarget: String? = nil) throws -> Self {
+        try snapshot(derivedData: derivedData, into: directory, testTargets: testTarget.map { [$0] } ?? [])
+    }
+
+    static func snapshot(derivedData: URL, into directory: URL, testTargets: [String]) throws -> Self {
         let original = derivedData.appendingPathComponent("Build/Products")
-        let selectedTarget = testTarget.flatMap { $0.isEmpty ? nil : $0 }
+        let selectedTargets = Array(Set(testTargets.filter { !$0.isEmpty })).sorted()
         let candidates = try FileManager.default.contentsOfDirectory(at: original, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "xctestrun" }
         let matches: [URL]
-        if let selectedTarget {
-            matches = try candidates.filter { file in containsTarget(try read(file), name: selectedTarget) }
+        if !selectedTargets.isEmpty {
+            matches = try candidates.filter { file in
+                let contents = try read(file)
+                return selectedTargets.allSatisfy { containsTarget(contents, name: $0) }
+            }
         } else {
             // A scheme's default test plan may contain several test bundles. Preserve the
             // whole manifest so xcodebuild runs every target in that plan.
@@ -65,8 +72,10 @@ struct XcodeTestArtifacts: Sendable {
             let found = candidates.isEmpty
                 ? "No .xctestrun files were generated."
                 : "Found \(candidates.count) candidate(s): \(details.joined(separator: "; "))."
-            let expected = selectedTarget.map { "for test target '\($0)' (or its default test plan)" } ?? "for the selected scheme's test plan"
-            let scopeHint = selectedTarget == nil ? " Pass --test-target to select one target if the scheme produces multiple manifests." : ""
+            let expected = selectedTargets.isEmpty
+                ? "for the selected scheme's test plan"
+                : "for test targets '\(selectedTargets.joined(separator: "', '"))' (or their default test plan)"
+            let scopeHint = selectedTargets.isEmpty ? " Select a scheme/test plan that contains all requested test targets." : ""
             throw MutationEngineError.invalidProject("Expected one generated test manifest \(expected); found \(selected.count) matching manifest(s) in \(original.path). \(found)\(scopeHint)")
         }
         let products = directory.appendingPathComponent("Products")

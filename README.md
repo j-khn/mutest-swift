@@ -56,7 +56,7 @@ For an iOS or iPadOS Swift package inside an Xcode project or workspace, pass th
 
 When you pass a package folder, `./run` finds its enclosing Xcode project or workspace and runs the matching package scheme on a simulator. It does not fall back to `swift test` on the Mac. A package without an enclosing Xcode project or workspace cannot run iOS or iPadOS tests this way.
 
-For an Xcode project or workspace, the tool asks which scheme, test scope, and simulator to use. Choose all test targets in the scheme's test plan, or select one target for a smaller run. If you pass a package folder and its name matches an Xcode scheme, that scheme is selected automatically. Press Enter to choose the first option in other menus. You can pass the choices as options to skip the prompts. iPhone and iPad simulators are supported.
+For an Xcode project or workspace, the tool asks which scheme, test scope, and simulator to use. Choose multiple test targets to run all tests in each. You can also add file, suite, or test-name filters from other test targets in the same scheme; those filters add only their matches. If you pass a package folder and its name matches an Xcode scheme, that scheme is selected automatically. Press Enter to choose the first option in other menus. You can pass the choices as options to skip the prompts. iPhone and iPad simulators are supported.
 
 <details>
 <summary>CLI options</summary>
@@ -65,13 +65,13 @@ For an Xcode project or workspace, the tool asks which scheme, test scope, and s
 | --- | --- | --- |
 | `PROJECT` | iOS/iPadOS package folder with an enclosing Xcode project/workspace, `.xcodeproj`, `.xcworkspace`, or folder containing one; defaults to `.` | Project to test. |
 | `--scheme NAME` | Xcode scheme | Selects an Xcode scheme. Asked interactively if missing. |
-| `--target NAME` or `--test-target NAME` | Optional Xcode test target, such as `ShareContactsTests` | Limits tests to that target. Omit it to run all test targets in the selected scheme's test plan. |
-| `--destination VALUE` | Xcode destination string | Chooses the simulator. Asked interactively if missing. |
-| `--parallelism N` or `--parallelization N` | Positive number; default `2` | Runs up to this many mutants at once. |
-| `--source PATH` | Swift source file or folder; repeatable | Limits where mutations are made. No value means all discovered source files. |
-| `--target-file PATH` or `--test-file PATH` | Test file; repeatable | Selects tests from the named file. No test selectors means all tests in the target. |
-| `--suite NAME` | Test suite name; repeatable | Selects tests in the named suite. |
-| `--target-tests NAME` or `--test NAME` | Test name; repeatable | Selects the named test. |
+| `--test-target NAME` | Xcode test target; repeatable | Runs every test in each named target. |
+| `--destination-simulator VALUE` | Xcode simulator destination string | Chooses the simulator. Asked interactively if missing. |
+| `--workers COUNT` | Positive number; default `2` | Runs up to this many mutants at once. |
+| `--mutation-source PATH` | Swift production source file or folder; repeatable | Limits where mutations are made. No value means all discovered source files. |
+| `--test-file PATH` | Test file path; repeatable | Adds every test in that file, including from another target in the chosen scheme. |
+| `--test-suite NAME` | Suite name; repeatable | Adds tests in that suite, including from another target in the chosen scheme. |
+| `--test-name NAME` | Test function or custom name; repeatable | Adds matching test(s), including from another target in the chosen scheme. |
 | `--operators NAMES` | Comma-separated: `relational`, `boolean`, `logical`, `arithmetic`, `negateConditional`, `swapTernary`, `removeSideEffects` | Limits the kinds of changes made. |
 | `--operator-tier TIER` | `experimental` (default) or `all` | Chooses the operator set. `conservative` and `default` are not available yet. |
 | `--xcodebuild-arg NAME=VALUE` | Xcode build setting; repeatable | Passes a setting to Xcode builds. |
@@ -81,19 +81,26 @@ For an Xcode project or workspace, the tool asks which scheme, test scope, and s
 | `--validate` | Flag | Checks project settings without running mutation tests. |
 | `--help` | Flag | Shows the full command help. |
 
+An Xcode scheme is the build and test plan. A test target is one test bundle inside that scheme. Every target and test selected below must be included in the scheme's test plan.
+
+Each `--test-target` adds **all tests in that target**. Each file, suite, or name option adds only its matches, even when they belong to other targets in the same scheme. All filters are combined with **OR**; duplicates run once. A file selects every test in that file; use `--test-name` to select individual tests. If a selector name matches multiple targets, qualify it as `TargetName::selector`.
+
 Examples:
 
 ```sh
 ./run --help
-./run /path/to/MyApp.xcodeproj --scheme MyApp --target MyAppTests --destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' --parallelism 2
-./run /path/to/MyApp.xcodeproj --source Sources/Checkout --target-file CheckoutTests.swift
+./run /path/to/MyApp.xcodeproj --scheme MyApp --test-target MyAppTests --destination-simulator 'platform=iOS Simulator,name=iPhone 17,OS=latest' --workers 2
+./run /path/to/MyApp.xcodeproj --mutation-source Sources/Checkout/A.swift --mutation-source Sources/Checkout/B.swift --test-file CheckoutATests.swift --test-file CheckoutBTests.swift
+./run /path/to/MyApp.xcodeproj --scheme MyApp --test-target TargetA --test-target TargetB --test-file CTests.swift --test-suite 'TargetETests::Suite1' --test-name 'TargetDTests::testABC' --destination-simulator 'platform=iOS Simulator,name=iPhone 17,OS=latest'
 ```
+
+The last command runs all tests in A and B, every test in `CTests.swift`, all tests in `Suite1` from E, and the one named test from D. Xcode builds the selected scheme's test products; test runs use only this combined selection. Replace the sample target and selector names with names from your scheme.
 
 </details>
 
 ### 2. Run with GitHub Actions
 
-GitHub reads workflow files from `.github/workflows/`, so create your workflow there. The example below runs on pushes and pull requests to `main`; change the branch name if your repository uses another one. Without `test-target`, it runs all test targets in the scheme's test plan.
+GitHub reads workflow files from `.github/workflows/`, so create your workflow there. The example below runs on pushes and pull requests to `main`; change the branch name if your repository uses another one. Without test selectors or target inputs, it runs every test target in the scheme's test plan.
 
 <small><em>Note: `mutest-swift` is private for now. You need permission to clone it and to let your repository use its GitHub Action. Grant Action access in `mutest-swift` → Settings → Actions → General → Access. <a href="https://docs.github.com/en/actions/how-tos/reuse-automations/share-across-private-repositories">GitHub explains this setting</a>.</em></small>
 
@@ -123,9 +130,15 @@ jobs:
           project-kind: xcode-project
           scheme: MyApp
           destination: platform=iOS Simulator,name=iPhone 17,OS=latest
+          test-targets: |
+            ShareUnitTests
+          test-file: |
+            ShareContacts/Tests/ContactTests.swift
+          test: |
+            ShareUITests::testRefresh
 ```
 
-Replace `MyApp` and the simulator name with values from your project and runner. For a Swift package, use `project-path: .` and `project-kind: swift-package`; omit `scheme`, `test-target`, and `destination`. The Action builds the tool, runs the tests, adds the Markdown report to the workflow summary, and uploads the reports.
+Replace `MyApp` and the simulator name with values from your project and runner. For a Swift package, use `project-path: .` and `project-kind: swift-package`; omit `scheme`, `test-targets`, and `destination`. The Action builds the tool, runs the tests, adds the Markdown report to the workflow summary, and uploads the reports.
 
 <details>
 <summary>GitHub Action inputs</summary>
@@ -135,9 +148,9 @@ Replace `MyApp` and the simulator name with values from your project and runner.
 | `project-path` | Required | Package folder, `.xcodeproj`, or `.xcworkspace`. |
 | `project-kind` | `swift-package` (default), `xcode-project`, `xcode-workspace` | Project type. |
 | `scheme`, `destination` | Required for Xcode projects | Xcode scheme and simulator destination. |
-| `test-target` | Optional | Limit the run to one Xcode test target. Omit it to run the scheme's full test plan. |
+| `test-targets` | One Xcode test target per line; optional | Runs every test in each listed target. The older `test-target` input still accepts one target. Omit both to use the scheme's full test plan when there are no selectors. |
 | `source` | One relative path per line; blank means all discovered source | Limits mutation locations. |
-| `test-file`, `suite`, `test` | One selector per line; blank means full test scope | Optionally limits tests. For Xcode, provide `test-target` when using these selectors. |
+| `test-file`, `suite`, `test` | One selector per line; blank means no filter | Adds matching tests from any target included in the chosen scheme. Selectors combine with target-wide selections; you do not need to name their targets separately. |
 | `operator-tier` | `experimental` (default) or `all` | Chooses the operator set. `conservative` and `default` are not available yet. |
 | `parallelism` | Positive number; default `2` | Maximum number of concurrent mutants. |
 | `xcodebuild-arg` | One `NAME=VALUE` per line | Extra Xcode build settings. |
@@ -161,7 +174,7 @@ Replace `MyApp` and the simulator name with values from your project and runner.
 
 The tool first runs the selected tests on the original code. If they fail, it stops. It then tries small code changes, one mutant at a time. If a test fails while a mutant is confirmed active, that mutant is killed. If tests pass, the tool finishes the selected test run to check whether the mutant survived or had no coverage.
 
-By default, it mutates all discovered source files and runs all tests in the configured Swift package or Xcode scheme's test plan. `--source` limits which files are changed; it does not limit tests. Use `--test-target` to limit an Xcode run to one target, or `--test-file`, `--suite`, or `--test` to select fewer tests within a target.
+By default, it mutates all discovered source files and runs all tests in the configured Swift package or Xcode scheme's test plan. `--mutation-source` limits which files are changed; it does not limit tests. In Xcode, repeat `--test-target` to add every test from multiple targets. Add any number of `--test-file`, `--test-suite`, and `--test-name` selectors to include only their matching tests from other targets in the same scheme. These selections are combined, and duplicate tests run once. A test file's owning target is discovered from Xcode project membership or the Swift package manifest. If it cannot be resolved, the tool errors rather than running an unrelated target.
 
 Swift package dependencies are resolved from `Package.swift`. Local sibling packages are copied into the isolated sandbox with their relative paths preserved. Git dependencies use SwiftPM or Xcode resolution, including the manifest's version, exact version, tag, branch, or revision requirement. Source files and resources declared by package targets are copied with their package.
 
@@ -169,7 +182,7 @@ Mutation types include changing comparisons, Boolean values, logical and arithme
 
 ## What affects run time and cache reuse?
 
-- Xcode simulator runs can use up to `--parallelism` workers (default: `2`). Swift package runs use parallel workers with Swift Testing; packages that use XCTest run serially.
+- Xcode simulator runs can use up to `--workers` workers (default: `2`). Swift package runs use parallel workers with Swift Testing; packages that use XCTest run serially.
 - Xcode builds use at most two build jobs. The first build finishes before simulator workers boot, and workers boot one at a time. Mutant tests still run in parallel after startup.
 - Xcode build files and downloaded dependencies stay in a temporary folder outside your copied source tree, so project-wide lint plugins do not scan that build folder. The folder is removed when the run finishes or fails. Your project's lint plugins still run normally.
 - A verified test failure can end that mutant's run early. Survivors and mutants with no coverage finish the selected test scope.

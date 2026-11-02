@@ -26,7 +26,7 @@ enum SwiftMutationTestingCLI {
         ProcessRunner.installCancellationHandlers()
         do {
             let arguments = try parse(Array(CommandLine.arguments.dropFirst()))
-            if arguments.command == "help" || arguments.flags.contains("--help") { print(help); return }
+            if arguments.command == "help" || arguments.flags.contains("--help") || arguments.flags.contains("-h") { print(help); return }
             if arguments.command == "version" { print("mutest-swift 0.3.0"); return }
             if arguments.command == "validate" {
                 let configuration = try makeConfiguration(arguments)
@@ -62,20 +62,32 @@ enum SwiftMutationTestingCLI {
 
     static func parse(_ arguments: [String]) throws -> Arguments {
         guard let command = arguments.first else { return Arguments(command: "help") }
+        if command == "--help" || command == "-h" { return Arguments(command: "help") }
         var parsed = Arguments(command: command)
         let valueOptions: Set<String> = [
-            "--config", "--project", "--project-kind", "--source", "--test-file", "--suite", "--test",
-            "--scheme", "--test-target", "--destination", "--xcodebuild-arg", "--operators", "--operator-tier", "--build-timeout",
-            "--baseline-timeout", "--mutant-timeout", "--parallelism", "--output", "--cache-path", "--minimum-score",
+            "--config", "--project", "--project-kind", "--mutation-source", "--source", "--test-file", "--target-file",
+            "--test-suite", "--suite", "--test-name", "--target-tests", "--test", "--scheme", "--test-target", "--target",
+            "--destination", "--destination-simulator", "--xcodebuild-arg", "--operators", "--operator-tier", "--build-timeout",
+            "--baseline-timeout", "--mutant-timeout", "--parallelism", "--workers", "--output", "--cache-path", "--minimum-score",
             "--maximum-score-drop", "--maximum-integrity-warnings", "--baseline-report"
         ]
-        let flagOptions: Set<String> = ["--no-resume", "--no-cache", "--no-suppressions", "--require-suppression-reason", "--fail-on-new-survivors", "--help"]
+        let canonicalOptions = [
+            "--mutation-source": "--source",
+            "--target-file": "--test-file",
+            "--test-suite": "--suite",
+            "--test-name": "--test",
+            "--target-tests": "--test",
+            "--target": "--test-target",
+            "--destination-simulator": "--destination",
+            "--workers": "--parallelism",
+        ]
+        let flagOptions: Set<String> = ["--no-resume", "--no-cache", "--no-suppressions", "--require-suppression-reason", "--fail-on-new-survivors", "--help", "-h"]
         var index = 1
         while index < arguments.count {
             let option = arguments[index]
             if flagOptions.contains(option) { parsed.flags.insert(option); index += 1; continue }
             guard valueOptions.contains(option), index + 1 < arguments.count else { throw CLIError.usage("Unknown or incomplete option: \(option)") }
-            parsed.add(option, arguments[index + 1]); index += 2
+            parsed.add(canonicalOptions[option] ?? option, arguments[index + 1]); index += 2
         }
         return parsed
     }
@@ -115,7 +127,7 @@ enum SwiftMutationTestingCLI {
         if !arguments.all("--suite").isEmpty { config.tests.suites = arguments.all("--suite") }
         if !arguments.all("--test").isEmpty { config.tests.tests = arguments.all("--test") }
         if let scheme = arguments.first("--scheme") { config.project.scheme = scheme }
-        if let target = arguments.first("--test-target") { config.project.testTarget = target }
+        if !arguments.all("--test-target").isEmpty { config.project.testTargets = arguments.all("--test-target") }
         if let destination = arguments.first("--destination") { config.project.destination = destination }
         if let operators = arguments.first("--operators") {
             config.operators = try operators.split(separator: ",").map { name in
@@ -156,16 +168,10 @@ enum SwiftMutationTestingCLI {
             guard let scheme = configuration.project.scheme, !scheme.isEmpty else { throw CLIError.usage("Xcode projects/workspaces require --scheme.") }
             let path = URL(fileURLWithPath: configuration.project.path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
             guard FileManager.default.fileExists(atPath: path.path) else { throw CLIError.usage("Xcode project/workspace does not exist at \(path.path).") }
-            if (configuration.project.testTarget == nil || configuration.project.testTarget?.isEmpty == true), !configuration.tests.isEmpty {
-                throw CLIError.usage("Xcode test-file, suite, and test selectors require --test-target. Omit all test selectors to run every test target in the selected scheme's test plan.")
-            }
         }
-        _ = try SwiftTestSelectorResolver().resolve(
-            projectRoot: root,
-            selection: configuration.tests,
-            testTarget: configuration.project.testTarget,
-            forXcode: configuration.project.kind != .swiftPackage
-        )
+        if configuration.project.kind == .swiftPackage {
+            _ = try SwiftTestSelectorResolver().resolve(projectRoot: root, selection: configuration.tests)
+        }
     }
 
     static func xcodebuildArguments(_ arguments: Arguments, projectKind: ProjectKind) throws -> [String] {
@@ -208,24 +214,34 @@ enum SwiftMutationTestingCLI {
     }
 
     static let help = """
-    mutest-swift 0.2.0
+    mutest-swift 0.3.0
 
     Usage:
       swift-mutation-testing run [options]
       swift-mutation-testing validate [options]
       swift-mutation-testing version
 
-    Project and source scope:
+    Project:
       --project PATH                 Project root (default: .)
       --project-kind KIND            swift-package | xcode-project | xcode-workspace
-      --source PATH                  Swift file/folder to mutate; repeatable
-      --test-file PATH               Test file selector; repeatable
-      --suite NAME                   Test suite selector; repeatable
-      --test NAME                    Test function or custom @Test name; repeatable
       --scheme NAME                  Xcode scheme
-      --test-target NAME             Optional Xcode test target; omit to run the scheme's full test plan
-      --destination VALUE            xcodebuild destination, e.g. platform=iOS Simulator,name=iPhone 17
+      --destination-simulator VALUE  iOS Simulator for Xcode tests, e.g. platform=iOS Simulator,name=iPhone 17,OS=latest
       --xcodebuild-arg NAME=VALUE    Xcode build setting; repeatable
+
+    Code to mutate:
+      --mutation-source PATH         Production Swift file/folder; repeat once per path
+
+    Tests to run:
+      --test-target NAME             Xcode test target to run in full; repeat for more targets
+      --test-file PATH               File containing tests; repeat once per file
+      --test-suite NAME              Suite grouping name or @Suite display name; repeat once per suite
+      --test-name NAME               Test function or custom test name; repeat once per test
+      Target and test selectors are combined: whole targets plus matching files/suites/tests.
+      File, suite, and test selectors can resolve to other test targets in the selected scheme.
+      Example: --test-target A --test-target B --test-file CTests.swift runs all A/B tests plus tests in that file.
+      Add --test-suite or --test-name to include matches from more targets. Duplicate names need TargetName::selector.
+
+    General options:
       --operators IDS                Comma-separated canonical operator IDs
       --operator-tier TIER           conservative | default | experimental | all
       --config PATH                  JSON run configuration
@@ -234,7 +250,7 @@ enum SwiftMutationTestingCLI {
       --build-timeout SECONDS        Build timeout (default 600)
       --baseline-timeout SECONDS     Baseline test timeout (default 300)
       --mutant-timeout SECONDS       Per-mutant timeout (default 120)
-      --parallelism COUNT            Requested worker count (default 2)
+      --workers COUNT                Simultaneous mutant workers (default 2)
       --cache-path DIR               Cache journal directory (default: report directory)
       --no-cache                     Disable journal reads and writes
       --no-resume                    Do not reuse prior journal verdicts
@@ -247,8 +263,13 @@ enum SwiftMutationTestingCLI {
       --fail-on-new-survivors        Fail when new survivors are supplied to the gate API
       --output PATH                  Report directory (default: .swift-mutation-testing)
 
-    Without test selectors, all tests in the configured Swift package or Xcode scheme's test plan run.
-    For Xcode projects, --test-target optionally narrows this to one target. Source selection never
-    narrows tests automatically, allowing full-suite ripple checks for changed source files.
+    With no test selectors or targets, all tests in the configured Swift package or Xcode scheme's test plan run.
+    Each --test-target adds every test in that target. Each file, suite, or test selector adds its matches,
+    even when they belong to a different target. All selected targets must be included in the chosen scheme/test plan.
+    --test-file selects every test in that file; use --test-name to choose individual tests.
+    Source selection never narrows tests automatically, allowing full-suite ripple checks for changed source files.
+
+    Older aliases remain accepted: --source, --target, --target-file, --target-tests, --test, --suite,
+    --destination, and --parallelism.
     """
 }

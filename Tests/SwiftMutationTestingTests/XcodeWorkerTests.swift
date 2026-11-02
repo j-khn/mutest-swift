@@ -247,6 +247,36 @@ struct XcodeWorkerTests {
         #expect(first.hostBundleIDs == ["example.Fixture"])
     }
 
+    @Test("keeps all requested test targets in one Xcode manifest")
+    func artifactsForMultipleTargets() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let products = root.appendingPathComponent("builder/Build/Products")
+        try FileManager.default.createDirectory(at: products, withIntermediateDirectories: true)
+        let testTargets: [[String: Any]] = ["TargetA", "TargetB", "TargetC"].map { name in
+            ["BlueprintName": name, "TestBundlePath": "__TESTROOT__/\(name).xctest", "EnvironmentVariables": [String: String]()]
+        }
+        let manifest: [String: Any] = [
+            "TestPlan": ["Name": "Default", "IsDefault": true],
+            "TestConfigurations": [["Name": "Tests", "TestTargets": testTargets]]
+        ]
+        let data = try PropertyListSerialization.data(fromPropertyList: manifest, format: .xml, options: 0)
+        try data.write(to: products.appendingPathComponent("Fixture.xctestrun"))
+
+        let artifacts = try XcodeTestArtifacts.snapshot(
+            derivedData: root.appendingPathComponent("builder"),
+            into: root.appendingPathComponent("worker"),
+            testTargets: ["TargetA", "TargetB", "TargetC"]
+        )
+        #expect(artifacts.hostBundleIDs.isEmpty)
+        let invocation = try artifacts.invocationManifest(environment: ["SWIFT_MUTATION_ID": "mutant"])
+        let plist = try PropertyListSerialization.propertyList(from: Data(contentsOf: invocation), format: nil) as? [String: Any]
+        #expect(plist != nil)
+        let serialized = String(describing: plist)
+        #expect(serialized.contains("TargetA"))
+        #expect(serialized.contains("TargetB"))
+        #expect(serialized.contains("TargetC"))
+    }
+
     @Test("removes only stale Xcode test manifests before a fallback build")
     func removeGeneratedManifests() throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }

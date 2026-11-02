@@ -3,6 +3,7 @@ import Foundation
 struct PackageDependencyGraph: Sendable {
     var localPackages: [URL]
     var commonRoot: URL
+    var testTargetByFile: [String: [String]]
 }
 
 struct ProjectSandbox: Sendable {
@@ -22,6 +23,17 @@ enum PackageDependencyResolver {
         }
         var visited = Set<String>()
         var packages: [URL] = []
+        var testTargetByFile: [String: [String]] = [:]
+        switch kind {
+        case .swiftPackage:
+            break
+        case .xcodeProject:
+            merge(try XcodeTestTargetDiscovery.testTargetBySourceFile(in: projectURL), into: &testTargetByFile)
+        case .xcodeWorkspace:
+            for project in try xcodeProjects(inWorkspace: projectURL) {
+                merge(try XcodeTestTargetDiscovery.testTargetBySourceFile(in: project), into: &testTargetByFile)
+            }
+        }
         let runner = ProcessRunner()
         var index = 0
         while !queue.isEmpty {
@@ -38,6 +50,11 @@ enum PackageDependencyResolver {
                 workingDirectory: package, timeout: timeout, outputFile: dumpLog))
             guard !dump.timedOut, dump.exitCode == 0 else {
                 throw MutationEngineError.invalidProject("Could not read package dependencies from \(manifest.path). See \(dumpLog.path)")
+            }
+            let packageTestTargets = try testTargetBySourceFile(in: dump.output, packageRoot: package)
+            for (file, targets) in packageTestTargets {
+                testTargetByFile[file, default: []] += targets
+                testTargetByFile[file] = Array(Set(testTargetByFile[file] ?? [])).sorted()
             }
             for path in try localDependencyPaths(in: dump.output, manifest: manifest) {
                 let dependency = URL(fileURLWithPath: path, relativeTo: package).standardizedFileURL
@@ -57,7 +74,47 @@ enum PackageDependencyResolver {
         let localDependencies = unique.filter { $0.standardizedFileURL != projectRoot.standardizedFileURL }
         let names = localDependencies.map(\.lastPathComponent).joined(separator: ", ")
         mutationLog("Package manifests inspected: \(unique.count); local dependencies: \(localDependencies.count)\(names.isEmpty ? "" : " (\(names))"). Git requirements resolve through SwiftPM or Xcode.")
-        return .init(localPackages: unique, commonRoot: commonRoot)
+        return .init(localPackages: unique, commonRoot: commonRoot, testTargetByFile: testTargetByFile)
+    }
+
+    private static func merge(_ source: [String: [String]], into destination: inout [String: [String]]) {
+        for (file, targets) in source {
+            destination[file, default: []] += targets
+            destination[file] = Array(Set(destination[file] ?? [])).sorted()
+        }
+    }
+
+    static func testTargetBySourceFile(in json: String, packageRoot: URL) throws -> [String: [String]] {
+        guard let data = json.data(using: .utf8),
+              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let targets = root["targets"] as? [[String: Any]] else {
+            throw MutationEngineError.invalidProject("SwiftPM returned unreadable target information for \(packageRoot.path).")
+        }
+        var result: [String: [String]] = [:]
+        for target in targets where target["type"] as? String == "test" {
+            guard let name = target["name"] as? String, !name.isEmpty else { continue }
+            let targetPath = target["path"] as? String ?? "Tests/\(name)"
+            let sources = target["sources"] as? [String] ?? []
+            let sourceURLs: [URL]
+            if sources.isEmpty {
+                let directory = URL(fileURLWithPath: targetPath, relativeTo: packageRoot).standardizedFileURL
+                sourceURLs = (FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])?.allObjects as? [URL] ?? [])
+                    .filter { $0.pathExtension == "swift" }
+            } else {
+                sourceURLs = sources.filter { $0.hasSuffix(".swift") }.map { source in
+                    if source.hasPrefix("/") { return URL(fileURLWithPath: source).standardizedFileURL }
+                    let packageRelative = URL(fileURLWithPath: source, relativeTo: packageRoot).standardizedFileURL
+                    if FileManager.default.fileExists(atPath: packageRelative.path) { return packageRelative }
+                    let targetDirectory = URL(fileURLWithPath: targetPath, isDirectory: true, relativeTo: packageRoot).standardizedFileURL
+                    return URL(fileURLWithPath: source, relativeTo: targetDirectory).standardizedFileURL
+                }
+            }
+            for file in sourceURLs {
+                result[file.standardizedFileURL.path, default: []].append(name)
+            }
+        }
+        for file in result.keys { result[file] = Array(Set(result[file] ?? [])).sorted() }
+        return result
     }
 
     private static func localPackages(in project: URL) throws -> [URL] {
@@ -69,6 +126,20 @@ enum PackageDependencyResolver {
     }
 
     private static func localPackages(inWorkspace workspace: URL) throws -> [URL] {
+        let references = try workspaceReferences(in: workspace)
+        var packages: [URL] = []
+        for resolved in references {
+            if resolved.pathExtension == "xcodeproj" { packages += try localPackages(in: resolved) }
+            else if FileManager.default.fileExists(atPath: resolved.appendingPathComponent("Package.swift").path) { packages.append(resolved) }
+        }
+        return packages
+    }
+
+    private static func xcodeProjects(inWorkspace workspace: URL) throws -> [URL] {
+        try workspaceReferences(in: workspace).filter { $0.pathExtension == "xcodeproj" }
+    }
+
+    private static func workspaceReferences(in workspace: URL) throws -> [URL] {
         let data = workspace.appendingPathComponent("contents.xcworkspacedata")
         guard let contents = try? String(contentsOf: data, encoding: .utf8), let xml = contents.data(using: .utf8) else {
             throw MutationEngineError.invalidProject("Could not read Xcode workspace file at \(data.path).")
@@ -78,7 +149,7 @@ enum PackageDependencyResolver {
         parser.delegate = delegate
         guard parser.parse() else { throw MutationEngineError.invalidProject("Could not read Xcode workspace references in \(data.path).") }
         let workspaceBase = workspace.deletingLastPathComponent()
-        var packages: [URL] = []
+        var references: [URL] = []
         for reference in delegate.references {
             guard let colon = reference.firstIndex(of: ":") else { continue }
             let kind = String(reference[..<colon])
@@ -90,10 +161,9 @@ enum PackageDependencyResolver {
             case "container": resolved = URL(fileURLWithPath: path, relativeTo: workspaceBase).standardizedFileURL
             default: continue
             }
-            if resolved.pathExtension == "xcodeproj" { packages += try localPackages(in: resolved) }
-            else if FileManager.default.fileExists(atPath: resolved.appendingPathComponent("Package.swift").path) { packages.append(resolved) }
+            references.append(resolved)
         }
-        return packages
+        return references
     }
 
     private static func packageReferences(in contents: String, basedAt base: URL, manifest: URL) throws -> [URL] {

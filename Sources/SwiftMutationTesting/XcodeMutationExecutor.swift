@@ -207,7 +207,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         if let old = worker.artifacts { try FileManager.default.removeItem(at: old.products.deletingLastPathComponent()) }
         worker.artifacts = nil
         worker.artifacts = try XcodeTestArtifacts.snapshot(derivedData: derivedData,
-            into: worker.directory.appendingPathComponent("artifacts-\(UUID().uuidString)"), testTarget: configuration.project.testTarget)
+            into: worker.directory.appendingPathComponent("artifacts-\(UUID().uuidString)"), testTargets: selection.targets)
     }
 
     private func prepareAndValidateWorkers(pool: XcodeSimulatorPool, derivedData: URL) throws -> TimeInterval {

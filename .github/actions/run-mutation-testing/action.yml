@@ -13,15 +13,15 @@ inputs:
     required: false
     default: ""
   test-file:
-    description: Test files to run, one path per line; empty plus no other selector runs all tests
+    description: Test files to run, one path per line; adds matching tests from any test target in the selected scheme
     required: false
     default: ""
   suite:
-    description: Test suite names, one per line
+    description: Test suite names, one per line; adds matching tests from any test target in the selected scheme
     required: false
     default: ""
   test:
-    description: Test function or custom Swift Testing name, one per line
+    description: Test function or custom Swift Testing name, one per line; adds matching tests from any test target in the selected scheme
     required: false
     default: ""
   scheme:
@@ -29,7 +29,11 @@ inputs:
     required: false
     default: ""
   test-target:
-    description: Optional Xcode test target; omit to run all test targets in the scheme's test plan
+    description: Legacy single Xcode test target; use test-targets for one or more targets
+    required: false
+    default: ""
+  test-targets:
+    description: Xcode test targets to run in full, one target per line; file, suite, and test selectors add matches from other targets in the selected scheme
     required: false
     default: ""
   destination:
@@ -123,6 +127,7 @@ runs:
         INPUT_TEST: ${{ inputs.test }}
         INPUT_SCHEME: ${{ inputs.scheme }}
         INPUT_TEST_TARGET: ${{ inputs.test-target }}
+        INPUT_TEST_TARGETS: ${{ inputs.test-targets }}
         INPUT_DESTINATION: ${{ inputs.destination }}
         INPUT_XCODEBUILD_ARG: ${{ inputs.xcodebuild-arg }}
         INPUT_OPERATOR_TIER: ${{ inputs.operator-tier }}
@@ -149,6 +154,7 @@ runs:
         if [[ "$project_path" != /* ]]; then project_path="$GITHUB_WORKSPACE/$project_path"; fi
         args=(run --project "$project_path" --project-kind "$INPUT_PROJECT_KIND" --operator-tier "$INPUT_OPERATOR_TIER" --parallelism "$INPUT_PARALLELISM" --build-timeout "$INPUT_BUILD_TIMEOUT" --baseline-timeout "$INPUT_BASELINE_TIMEOUT" --mutant-timeout "$INPUT_MUTANT_TIMEOUT" --maximum-integrity-warnings "$INPUT_MAXIMUM_INTEGRITY_WARNINGS")
         [[ -n "$INPUT_SCHEME" ]] && args+=(--scheme "$INPUT_SCHEME")
+        while IFS= read -r value; do [[ -n "$value" ]] && args+=(--test-target "$value"); done <<< "$INPUT_TEST_TARGETS"
         [[ -n "$INPUT_TEST_TARGET" ]] && args+=(--test-target "$INPUT_TEST_TARGET")
         if [[ -n "$INPUT_CACHE_PATH" ]]; then
           cache_path="$INPUT_CACHE_PATH"
