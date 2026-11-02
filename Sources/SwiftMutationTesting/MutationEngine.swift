@@ -122,8 +122,7 @@ private final class MutationProgress: @unchecked Sendable {
     func announceStart() {
         lock.lock(); defer { lock.unlock() }
         let remaining = max(0, total - completed)
-        let line = "[mutest-swift] Scope: \(sourceFileCount) source files, \(generatedMutantCount) mutants; \(suppressedCount) suppressed, \(completed) cached, \(remaining) remaining.\n"
-        try? FileHandle.standardOutput.write(contentsOf: Data(line.utf8))
+        mutationLog("Scope: \(sourceFileCount) source files, \(generatedMutantCount) mutants; \(suppressedCount) suppressed, \(completed) cached, \(remaining) remaining.")
     }
 
     func recordCompletion(candidate: MutationCandidate, status: MutantStatus) {

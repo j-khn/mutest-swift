@@ -44,7 +44,8 @@ enum SwiftMutationTestingCLI {
             let runDuration = Date().timeIntervalSince(runStartedAt)
             let score = report.summary.score.map { String(format: "%.1f%%", $0 * 100) } ?? "n/a"
             print("Mutation score: \(score) · killed \(report.summary.killed) · survived \(report.summary.survived) · no coverage \(report.summary.noCoverage) · timeout \(report.summary.timedOut) · unbuildable \(report.summary.unbuildable)")
-            print("[mutest-swift] Complete: \(report.summary.generated) mutants across \(report.scope.sources.count) source files in \(formatDuration(runDuration)).")
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+            print("[\(timestamp)][mutest-swift] Complete: \(report.summary.generated) mutants across \(report.scope.sources.count) source files in \(formatDuration(runDuration)).")
             let projectURL = URL(fileURLWithPath: configuration.project.path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
             let projectRoot = configuration.project.kind == .swiftPackage ? projectURL : projectURL.deletingLastPathComponent()
             let configuredOutput = configuration.output.directory.map { URL(fileURLWithPath: $0, relativeTo: projectRoot).standardizedFileURL }
