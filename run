@@ -316,13 +316,16 @@ def simulator_destinations() -> list[tuple[str, str]]:
                 continue
             if device.get("isAvailable") is False or not any(kind in device_type for kind in ("iPhone", "iPad")):
                 continue
-            name = f"{name or 'iPhone'} (iOS {'.'.join(map(str, version[:2]))})"
+            version_label = ".".join(map(str, version[:2]))
+            if version[2]:
+                version_label += f".{version[2]}"
+            name = f"{name or 'iPhone'} (iOS {version_label})"
             destination = f"platform=iOS Simulator,id={device['udid']}"
             entries.append((version, name, destination))
     if not entries:
         raise RuntimeError("No available iPhone or iPad simulators found. Install an iOS Simulator in Xcode.")
-    latest = max(entry[0] for entry in entries)
-    return [(name, destination) for version, name, destination in entries if version == latest]
+    entries.sort(key=lambda entry: (-entry[0][0], -entry[0][1], -entry[0][2], entry[1].casefold()))
+    return [(name, destination) for _, name, destination in entries]
 
 
 def choose_destination() -> str:
