@@ -46,7 +46,7 @@ enum SwiftMutationTestingCLI {
             let runDuration = Date().timeIntervalSince(runStartedAt)
             let score = report.summary.score.map { String(format: "%.1f%%", $0 * 100) } ?? "n/a"
             print("Mutation score: \(score) · killed \(report.summary.killed) · survived \(report.summary.survived) · no coverage \(report.summary.noCoverage) · timeout \(report.summary.timedOut) · unbuildable \(report.summary.unbuildable)")
-            let timestamp = ISO8601DateFormatter().string(from: Date())
+            let timestamp = localTimestamp()
             print("[\(timestamp)][mutest-swift] Complete: \(report.summary.generated) mutants across \(report.scope.sources.count) source files in \(formatDuration(runDuration)).")
             let projectURL = URL(fileURLWithPath: configuration.project.path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
             let projectRoot = configuration.project.kind == .swiftPackage ? projectURL : projectURL.deletingLastPathComponent()
@@ -294,8 +294,14 @@ enum SwiftMutationTestingCLI {
     }
 
     static func cliLog(_ message: String) {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let timestamp = localTimestamp()
         print("[\(timestamp)][mutest-swift] \(message)")
+    }
+
+    static func localTimestamp() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = .current
+        return formatter.string(from: Date())
     }
 
     static let help = """

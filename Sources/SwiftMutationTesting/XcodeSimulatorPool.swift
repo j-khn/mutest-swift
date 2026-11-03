@@ -8,7 +8,9 @@ import Glibc
 typealias XcodeCommandRunner = @Sendable (CommandSpec) throws -> CommandResult
 
 func mutationLog(_ message: String) {
-    let timestamp = ISO8601DateFormatter().string(from: Date())
+    let formatter = ISO8601DateFormatter()
+    formatter.timeZone = .current
+    let timestamp = formatter.string(from: Date())
     let line = "[\(timestamp)][mutest-swift] \(message)\n"
     try? FileHandle.standardOutput.write(contentsOf: Data(line.utf8))
 }
