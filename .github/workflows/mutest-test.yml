@@ -27,4 +27,4 @@ jobs:
         run: swift build --product swift-mutation-testing
 
       - name: Run tests
-        run: swift test
+        run: swift test --verbose
