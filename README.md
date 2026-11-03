@@ -74,6 +74,7 @@ For an Xcode project or workspace, the tool asks which scheme, test scope, and s
 | `--test-file-suffix SUFFIX` | `Tests.swift` by default; repeatable | Looks for files such as `FooTests.swift` when changed source is `Foo.swift`. |
 | `--destination-simulator VALUE` | Xcode simulator destination string | Chooses the simulator. Asked interactively if missing. |
 | `--workers COUNT` | Positive number; default `2` | Runs up to this many mutants at once. |
+| `--mutant-timeout SECONDS` | Positive number; default `30` | Maximum time for one mutant's test command. Increase it for slow integration tests, such as WebSocket or WebRTC tests. |
 | `--mutation-source PATH` | Swift production source file or folder; repeatable | Limits where mutations are made. No value means all discovered source files. |
 | `--test-file PATH` | Test file path; repeatable | Adds every test in that file, including from another target in the chosen scheme. |
 | `--test-suite NAME` | Suite name; repeatable | Adds tests in that suite, including from another target in the chosen scheme. |
@@ -216,7 +217,7 @@ The runner needs Xcode and the selected iOS Simulator runtime installed. Change 
 | `no-suppressions`, `require-suppression-reason` | `true` or `false`; default `false` | Controls mutation suppression comments. |
 | `build-timeout` | Seconds; default `600` | Maximum build time. |
 | `baseline-timeout` | Seconds; default `300` | Maximum baseline test time. |
-| `mutant-timeout` | Seconds; default `120` | Maximum test time per mutant. |
+| `mutant-timeout` | Seconds; default `30` | Maximum time for one mutant's test command. |
 | `minimum-score` | Number from `0` to `1` | Fails the job if the score is too low. |
 | `baseline-report` | Path to an earlier `report.json` | Compares this run with an earlier report. |
 | `maximum-score-drop` | Number from `0` to `1` | Maximum allowed score drop from the baseline report. |
@@ -245,6 +246,8 @@ Mutation types include changing comparisons, Boolean values, logical and arithme
 - Xcode builds use at most two build jobs. The first build finishes before simulator workers boot, and workers boot one at a time. Mutant tests still run in parallel after startup.
 - Xcode build files and downloaded dependencies stay in a temporary folder outside your copied source tree, so project-wide lint plugins do not scan that build folder. The folder is removed when the run finishes or fails. Your project's lint plugins still run normally.
 - A verified test failure can end that mutant's run early. Survivors and mutants with no coverage finish the selected test scope.
+- `--mutant-timeout` limits the complete test command for one mutant, including Xcode test-host startup. It defaults to 30 seconds. Increase it for slow integration tests—for example, `--mutant-timeout 90` for a WebSocket or WebRTC test target.
+- If a generated schema does not compile, the tool uses compiler file locations to isolate the affected source candidates first. It only bisects the remaining batch when the compiler output cannot identify a source file. Invalid individual mutations are reported as unbuildable; they do not block unrelated mutants.
 - JSON and Markdown reports include test counts and phase timings, such as build, baseline, mutant runs, and cleanup.
 - The verdict cache can reuse completed mutants on later runs when the code, tests, selectors, build settings, toolchain, and tool version still match.
 - `--no-cache` disables cache reads and writes. `--no-resume` ignores earlier results but still saves new ones.

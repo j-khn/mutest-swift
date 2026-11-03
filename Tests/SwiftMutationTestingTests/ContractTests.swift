@@ -17,10 +17,19 @@ struct ContractTests {
         let config = try JSONDecoder().decode(RunConfiguration.self, from: data)
         #expect(config.parallelism == 2)
         #expect(config.timeouts.buildSeconds == 600)
+        #expect(config.timeouts.baselineSeconds == 300)
+        #expect(config.timeouts.mutantSeconds == 30)
         #expect(!config.cache.enabled)
         #expect(config.suppression.requireReason)
         #expect(config.output.directory == "reports")
         #expect(config.output.formats == ["json"])
+    }
+
+    @Test("supports an explicit per-mutant timeout in JSON configuration")
+    func explicitMutantTimeout() throws {
+        let data = Data(#"{"timeouts":{"mutantSeconds":75}}"#.utf8)
+        let config = try JSONDecoder().decode(RunConfiguration.self, from: data)
+        #expect(config.timeouts.mutantSeconds == 75)
     }
 
     @Test("reads old single-target configuration and new multiple-target configuration")

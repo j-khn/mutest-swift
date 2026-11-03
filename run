@@ -74,6 +74,7 @@ Examples:
     options_group.add_argument("--operator-tier", default="experimental", choices=("experimental", "all"), help="operator tier (default: experimental)")
     options_group.add_argument("--xcodebuild-arg", action="append", default=[], help="Xcode build setting NAME=VALUE; repeatable")
     options_group.add_argument("--output", help="report directory")
+    options_group.add_argument("--mutant-timeout", type=positive_int, default=30, metavar="SECONDS", help="maximum time for each mutant's test command (default: 30)")
     options_group.add_argument("--no-cache", action="store_true", help="disable cached verdicts")
     options_group.add_argument("--no-resume", action="store_true", help="do not resume prior verdicts")
     options_group.add_argument("--validate", action="store_true", help="check project and selectors without running mutation tests")
@@ -341,7 +342,8 @@ def choose_destination() -> str:
 
 
 def common_arguments(args: argparse.Namespace, include_xcodebuild_args: bool = True, default_source: str | None = None) -> list[str]:
-    command = ["--workers", str(args.parallelism), "--operator-tier", args.operator_tier]
+    command = ["--workers", str(args.parallelism), "--operator-tier", args.operator_tier,
+               "--mutant-timeout", str(args.mutant_timeout)]
     source_values = args.source or ([default_source] if default_source else [])
     selectors = [("--mutation-source", source_values), ("--test-file", args.test_files), ("--test-suite", args.suite), ("--test-name", args.tests)]
     if include_xcodebuild_args:

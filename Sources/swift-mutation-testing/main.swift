@@ -341,7 +341,7 @@ enum SwiftMutationTestingCLI {
     Execution and gates:
       --build-timeout SECONDS        Build timeout (default 600)
       --baseline-timeout SECONDS     Baseline test timeout (default 300)
-      --mutant-timeout SECONDS       Per-mutant timeout (default 120)
+      --mutant-timeout SECONDS       Per-mutant test-command timeout (default 30)
       --workers COUNT                Simultaneous mutant workers (default 2)
       --cache-path DIR               Cache journal directory (default: report directory)
       --no-cache                     Disable journal reads and writes

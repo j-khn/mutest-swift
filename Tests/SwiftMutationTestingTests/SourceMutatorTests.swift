@@ -94,7 +94,9 @@ struct SourceMutatorTests {
         #expect(candidates.count > 1)
         #expect(schema.included == Set(candidates.map(\.id)))
         #expect(schema.isolated.isEmpty)
-        #expect(schema.source.contains("MutestRuntime") && schema.source.contains(".select"))
+        #expect(schema.source.contains("MutestRuntime") && schema.source.contains(".isActive"))
+        #expect(!schema.source.contains(".select") && !schema.source.contains(".evaluate"))
+        #expect(!schema.source.contains("() -> T") && !schema.source.contains("{ ("))
     }
 
     @Test("generates public activation helpers for mutated default arguments")
@@ -104,7 +106,72 @@ struct SourceMutatorTests {
         let schema = SwiftMutationGenerator().makeSchema(source: input, candidates: candidates)
         #expect(schema.included.count == 1)
         #expect(schema.source.contains("public enum MutestRuntime"))
-        #expect(schema.source.contains("public static func evaluate"))
+        #expect(schema.source.contains("public static func isActive"))
+    }
+
+    @Test("keeps async and implicit-self expressions inline instead of moving them into closures")
+    func asyncAndInstanceExpressionsStayInline() {
+        let input = """
+        @MainActor
+        final class SocketState {
+            var connected = true
+            func isReady() async -> Bool {
+                await ping() && connected
+            }
+            func ping() async -> Bool { true }
+        }
+        """
+        let candidates = SwiftMutationGenerator().generate(
+            source: input,
+            relativePath: "Sources/SocketState.swift",
+            operators: [.boolean, .logical]
+        )
+        let schema = SwiftMutationGenerator().makeSchema(source: input, candidates: candidates)
+
+        #expect(schema.included.count == candidates.count)
+        #expect(schema.isolated.isEmpty)
+        #expect(schema.source.contains("await ping()"))
+        #expect(schema.source.contains("connected"))
+        #expect(schema.source.contains(".isActive"))
+        #expect(!schema.source.contains(".evaluate") && !schema.source.contains(".select"))
+        #expect(!schema.source.contains("mutations: [") && !schema.source.contains("{ ("))
+    }
+
+    @Test("isolates candidates inside macro expansion arguments")
+    func macroExpansionArgumentsUseIsolatedPath() {
+        let input = "let query = #Predicate<Int> { $0 > 0 }"
+        let candidates = SwiftMutationGenerator().generate(
+            source: input,
+            relativePath: "Sources/Query.swift",
+            operators: [.relational]
+        )
+        let schema = SwiftMutationGenerator().makeSchema(source: input, candidates: candidates)
+
+        #expect(candidates.count == 1)
+        #expect(schema.included.isEmpty)
+        #expect(schema.isolated.map(\.id) == candidates.map(\.id))
+    }
+
+    @Test("compiler diagnostics narrow schema failure to the matching source line")
+    func schemaFailureAttribution() {
+        let input = """
+        func enabled() -> Bool { true }
+        func compare(_ value: Int) -> Bool { value > 0 }
+        """
+        let candidates = SwiftMutationGenerator().generate(
+            source: input,
+            relativePath: "Sources/Rule.swift",
+            operators: [.boolean, .relational]
+        )
+        let implicated = SchemaBuildFailureAttribution.implicatedCandidates(
+            in: "/tmp/build/Sources/Rule.swift:4:42: error: compiler diagnostic",
+            candidates: candidates,
+            sources: ["Sources/Rule.swift": input]
+        )
+
+        #expect(!implicated.isEmpty)
+        #expect(implicated.allSatisfy { $0.line == 2 })
+        #expect(implicated.count < candidates.count)
     }
 
     @Test("SHA-256 output is stable and standard")

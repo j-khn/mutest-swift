@@ -144,8 +144,37 @@ final class XcodeMutationExecutor: @unchecked Sendable {
             try executeBatch(sorted(schemaCandidates), pool: pool, isolated: false)
         } else {
             // Rebuild smaller groups, draining workers before replacing their frozen snapshots.
-            func narrowed(_ batch: [MutationCandidate]) throws {
+            func narrowed(_ batch: [MutationCandidate], afterFailure failure: SchemaBuildFailure? = nil) throws {
                 guard !batch.isEmpty else { return }
+                if let failure {
+                    let implicated = SchemaBuildFailureAttribution.implicatedCandidates(
+                        in: failure.output,
+                        candidates: batch,
+                        sources: sources
+                    )
+                    if batch.count == 1 {
+                        let candidate = batch[0]
+                        if !failure.timedOut, implicated.contains(where: { $0.id == candidate.id }) {
+                            var record = candidate.record
+                            record.status = .unbuildable
+                            record.message = "Mutant did not compile when built alone in the schema; see \(failure.log.path)."
+                            try finish(candidate, record: record, warnings: [])
+                        } else {
+                            isolatedCandidates.append(candidate)
+                        }
+                        return
+                    }
+                    if !implicated.isEmpty {
+                        let implicatedIDs = Set(implicated.map(\.id))
+                        isolatedCandidates += implicated
+                        try narrowed(batch.filter { !implicatedIDs.contains($0.id) })
+                        return
+                    }
+                    let middle = batch.count / 2
+                    try narrowed(Array(batch[..<middle]))
+                    try narrowed(Array(batch[middle...]))
+                    return
+                }
                 for (path, source) in sources {
                     let schema = generator.makeSchema(source: source, candidates: batch.filter { $0.source == path })
                     try schema.source.write(to: sandbox.appendingPathComponent(path), atomically: true, encoding: .utf8)
@@ -153,16 +182,15 @@ final class XcodeMutationExecutor: @unchecked Sendable {
                 let result = try build(root: sandbox, derivedData: builderData, worker: pool.workers[0], label: "schema-narrowed-\(UUID().uuidString)")
                 timings.schemaBuildSeconds += result.elapsed
                 if result.timedOut || result.exitCode != 0 {
-                    if batch.count == 1 { isolatedCandidates.append(batch[0]); return }
-                    let middle = batch.count / 2
-                    try narrowed(Array(batch[..<middle])); try narrowed(Array(batch[middle...])); return
+                    try narrowed(batch, afterFailure: .init(output: result.output, log: result.outputFile, timedOut: result.timedOut))
+                    return
                 }
                 let snapshotsStarted = Date()
                 try snapshotWorkers(pool: pool, derivedData: builderData)
                 timings.sandboxCopySeconds += Date().timeIntervalSince(snapshotsStarted)
                 try executeBatch(sorted(batch), pool: pool, isolated: false)
             }
-            try narrowed(sorted(schemaCandidates))
+            try narrowed(sorted(schemaCandidates), afterFailure: .init(output: initialBuild.output, log: initialBuild.outputFile, timedOut: initialBuild.timedOut))
         }
         if !isolatedCandidates.isEmpty {
             try restoreSources(in: sandbox)

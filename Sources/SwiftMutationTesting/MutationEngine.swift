@@ -440,6 +440,7 @@ public struct MutationEngine: Sendable {
             var schemaCandidates: [MutationCandidate] = []
             var isolatedCandidates: [MutationCandidate] = []
             var schemaBuildFailed = false
+            var schemaBuildFailure: SchemaBuildFailure?
             let activationDirectory: URL? = configuration.project.kind == .swiftPackage ? logs : nil
             for (relative, items) in candidatesBySource {
                 let original = try String(contentsOf: sourceByRelative[relative]!, encoding: .utf8)
@@ -465,6 +466,7 @@ public struct MutationEngine: Sendable {
                     // Retry smaller compatible groups after validating the original baseline.
                     // This keeps one bad rewrite from forcing every schema member into isolation.
                     schemaBuildFailed = true
+                    schemaBuildFailure = .init(output: build.output, log: build.outputFile, timedOut: build.timedOut)
                     for original in sourceFiles {
                         let relative = relativePath(original, root: root)
                         let clean = try String(contentsOf: original, encoding: .utf8)
@@ -605,13 +607,50 @@ public struct MutationEngine: Sendable {
             }
 
             if schemaBuildFailed {
-                func runSchemaBatch(_ batch: [MutationCandidate]) throws {
+                let schemaOriginals = try Dictionary(uniqueKeysWithValues: sourceFiles.map { file in
+                    (relativePath(file, root: root), try String(contentsOf: file, encoding: .utf8))
+                })
+                func runSchemaBatch(_ batch: [MutationCandidate], afterFailure failure: SchemaBuildFailure? = nil) throws {
                     guard !batch.isEmpty else { return }
+                    if let failure {
+                        let implicated = SchemaBuildFailureAttribution.implicatedCandidates(
+                            in: failure.output,
+                            candidates: batch,
+                            sources: schemaOriginals
+                        )
+                        if batch.count == 1 {
+                            let candidate = batch[0]
+                            if !failure.timedOut, implicated.contains(where: { $0.id == candidate.id }) {
+                                var record = candidate.record
+                                record.status = .unbuildable
+                                record.message = "Mutant did not compile when built alone in the schema; see \(failure.log.path)."
+                                records[candidate.id] = record
+                                if configuration.cache.enabled {
+                                    try appendJournal(.init(cacheKey: inputDigest + ":" + candidate.id, record: record, warnings: []), to: journal)
+                                }
+                                progress.recordCompletion(candidate: candidate, status: .unbuildable)
+                            } else {
+                                isolatedCandidates.append(candidate)
+                            }
+                            return
+                        }
+                        if !implicated.isEmpty {
+                            let implicatedIDs = Set(implicated.map(\.id))
+                            isolatedCandidates += implicated
+                            let remaining = batch.filter { !implicatedIDs.contains($0.id) }
+                            try runSchemaBatch(remaining)
+                            return
+                        }
+                        let midpoint = batch.count / 2
+                        try runSchemaBatch(Array(batch[..<midpoint]))
+                        try runSchemaBatch(Array(batch[midpoint...]))
+                        return
+                    }
                     var batchBySource: [String: [MutationCandidate]] = [:]
                     for candidate in batch { batchBySource[candidate.source, default: []].append(candidate) }
                     for sourceFile in sourceFiles {
                         let relative = relativePath(sourceFile, root: root)
-                        let original = try String(contentsOf: sourceFile, encoding: .utf8)
+                        let original = schemaOriginals[relative]!
                         let sourceCandidates = batchBySource[relative] ?? []
                         let schema = generator.makeSchema(source: original, candidates: sourceCandidates)
                         isolatedCandidates += schema.isolated
@@ -624,13 +663,7 @@ public struct MutationEngine: Sendable {
                     let build = try runner.run(adapter.command(root: sandbox, phase: .buildForTesting, resolved: selection, environment: [:], timeout: TimeInterval(configuration.timeouts.buildSeconds), output: buildLog))
                     timings.schemaBuildSeconds += Date().timeIntervalSince(buildStarted)
                     if build.timedOut || build.exitCode != 0 {
-                        if batch.count == 1 {
-                            isolatedCandidates.append(batch[0])
-                            return
-                        }
-                        let midpoint = batch.count / 2
-                        try runSchemaBatch(Array(batch[..<midpoint]))
-                        try runSchemaBatch(Array(batch[midpoint...]))
+                        try runSchemaBatch(batch, afterFailure: .init(output: build.output, log: build.outputFile, timedOut: build.timedOut))
                         return
                     }
 
@@ -664,7 +697,7 @@ public struct MutationEngine: Sendable {
                         progress.recordCompletion(candidate: candidate, status: record.status)
                     }
                 }
-                try runSchemaBatch(schemaCandidates.sorted(by: slowestFirst))
+                try runSchemaBatch(schemaCandidates.sorted(by: slowestFirst), afterFailure: schemaBuildFailure)
             }
 
             let runnableIsolated = isolatedCandidates.filter { records[$0.id] == nil }.sorted(by: slowestFirst)
@@ -1122,7 +1155,7 @@ public struct MutationEngine: Sendable {
             content.append(0)
             content.append(contentsOf: (environment[key] ?? "").utf8)
         }
-        content.append(contentsOf: "\u{0}0.3.0-xcode-workers-v3\u{0}\(runtimeFingerprint)\u{0}mutest-swift-cache-v3".utf8)
+        content.append(contentsOf: "\u{0}0.3.0-xcode-workers-v4\u{0}\(runtimeFingerprint)\u{0}mutest-swift-cache-v4".utf8)
         return SHA256Digest.hash(content)
     }
 

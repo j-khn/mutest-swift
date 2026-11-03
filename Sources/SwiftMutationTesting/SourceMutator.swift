@@ -52,8 +52,9 @@ public struct SwiftMutationGenerator: Sendable {
         }
     }
 
-    /// Produces one runtime-switch schema from candidate expressions. Candidates that overlap
-    /// are grouped into one runtime switch so each alternative can reuse the same build.
+    /// Produces one runtime-switch schema from candidate expressions. Candidate alternatives
+    /// stay inline at their source location: wrapping them in closures changes Swift's `self`,
+    /// actor, async, and contextual-type rules.
     public func makeSchema(source: String, candidates: [MutationCandidate]) -> (source: String, included: Set<String>, isolated: [MutationCandidate]) {
         var seen = Set<String>()
         let sorted = candidates.filter { seen.insert($0.id).inserted }.sorted { lhs, rhs in
@@ -92,21 +93,19 @@ public struct SwiftMutationGenerator: Sendable {
             if group.count == 1, let candidate = group.first, candidate.usesStatementForm {
                 replacement = "if \(runtimeName).shouldRunOriginal(\"\(candidate.id)\") { \(original) }"
                 included.insert(candidate.id)
-            } else if group.count == 1, let candidate = group.first {
-                replacement = "\(runtimeName).evaluate(\"\(candidate.id)\", mutated: (\(candidate.replacement)), original: (\(original)))"
-                included.insert(candidate.id)
             } else {
-                let alternatives = group.map { candidate -> String in
+                var dispatch = "(\(original))"
+                for candidate in group.reversed() {
                     var variant = Array(original.utf8)
                     let lowerBound = candidate.span.start - start
                     let upperBound = candidate.span.end - start
-                    guard lowerBound >= 0, upperBound <= variant.count, lowerBound < upperBound else { return "" }
+                    guard lowerBound >= 0, upperBound <= variant.count, lowerBound < upperBound else { continue }
                     variant.replaceSubrange(lowerBound..<upperBound, with: candidate.replacement.utf8)
-                    included.insert(candidate.id)
                     let mutated = String(decoding: variant, as: UTF8.self)
-                    return "(\"\(candidate.id)\", { (\(mutated)) })"
-                }.filter { !$0.isEmpty }.joined(separator: ", ")
-                replacement = "\(runtimeName).select(original: { (\(original)) }, mutations: [\(alternatives)])"
+                    dispatch = "(\(runtimeName).isActive(\"\(candidate.id)\") ? (\(mutated)) : \(dispatch))"
+                    included.insert(candidate.id)
+                }
+                replacement = dispatch
             }
             replacements.append((span, replacement))
         }
@@ -151,23 +150,16 @@ public struct SwiftMutationGenerator: Sendable {
 
     private static let runtimeSupportTemplate = #"""
     public enum MutestRuntime {
-        public static func evaluate<T>(_ id: String, mutated: @autoclosure () -> T, original: @autoclosure () -> T) -> T {
-            guard ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"] == id else { return original() }
+        public static func isActive(_ id: String) -> Bool {
+            guard ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"] == id else { return false }
             mark(id)
-            return mutated()
+            return true
         }
 
         public static func shouldRunOriginal(_ id: String) -> Bool {
             guard ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"] == id else { return true }
             mark(id)
             return false
-        }
-
-        public static func select<T>(original: () -> T, mutations: [(String, () -> T)]) -> T {
-            guard let activeID = ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"],
-                  let mutation = mutations.first(where: { $0.0 == activeID }) else { return original() }
-            mark(activeID)
-            return mutation.1()
         }
 
         private static func mark(_ id: String) {
@@ -386,7 +378,8 @@ private final class CandidateVisitor: SyntaxVisitor {
         let column = start - lineStart + 1
         let stableParts = ["1.0.0", relativePath.replacingOccurrences(of: "\\", with: "/"), operatorID.rawValue, String(start), originalText, replacement].joined(separator: "\u{0}")
         let id = SHA256Digest.hash(stableParts)
-        candidates.append(.init(id: id, operatorID: operatorID, source: relativePath, line: line, column: column, span: .init(start: start, end: end), original: originalText, replacement: replacement, usesStatementForm: usesStatementForm, requiresIsolation: requiresIsolation, suppressionReason: nil))
+        let isMacroArgument = ancestor(of: node, as: MacroExpansionExprSyntax.self) != nil
+        candidates.append(.init(id: id, operatorID: operatorID, source: relativePath, line: line, column: column, span: .init(start: start, end: end), original: originalText, replacement: replacement, usesStatementForm: usesStatementForm, requiresIsolation: requiresIsolation || isMacroArgument, suppressionReason: nil))
     }
 
     private func text(of node: some SyntaxProtocol) -> String {

@@ -134,9 +134,9 @@ inputs:
     required: false
     default: "300"
   mutant-timeout:
-    description: Per-mutant test timeout in seconds
+    description: Per-mutant test-command timeout in seconds
     required: false
-    default: "120"
+    default: "30"
   minimum-score:
     description: Minimum mutation score as a fraction from 0 to 1
     required: false

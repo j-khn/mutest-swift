@@ -98,7 +98,7 @@ public struct Timeouts: Codable, Sendable {
     public var mutantSeconds: Int
     public var parallelRetry: Bool
     public var retryMultiplier: Double
-    public init(buildSeconds: Int = 600, baselineSeconds: Int = 300, mutantSeconds: Int = 120, parallelRetry: Bool = true, retryMultiplier: Double = 2) {
+    public init(buildSeconds: Int = 600, baselineSeconds: Int = 300, mutantSeconds: Int = 30, parallelRetry: Bool = true, retryMultiplier: Double = 2) {
         self.buildSeconds = buildSeconds; self.baselineSeconds = baselineSeconds
         self.mutantSeconds = mutantSeconds; self.parallelRetry = parallelRetry; self.retryMultiplier = retryMultiplier
     }
@@ -107,7 +107,7 @@ public struct Timeouts: Codable, Sendable {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         buildSeconds = try values.decodeIfPresent(Int.self, forKey: .buildSeconds) ?? 600
         baselineSeconds = try values.decodeIfPresent(Int.self, forKey: .baselineSeconds) ?? 300
-        mutantSeconds = try values.decodeIfPresent(Int.self, forKey: .mutantSeconds) ?? 120
+        mutantSeconds = try values.decodeIfPresent(Int.self, forKey: .mutantSeconds) ?? 30
         parallelRetry = try values.decodeIfPresent(Bool.self, forKey: .parallelRetry) ?? true
         retryMultiplier = try values.decodeIfPresent(Double.self, forKey: .retryMultiplier) ?? 2
     }
