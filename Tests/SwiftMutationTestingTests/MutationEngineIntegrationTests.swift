@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import SwiftMutationTesting
 
-@Suite("Mutation engine integration")
+@Suite("Mutation engine integration", .serialized)
 struct MutationEngineIntegrationTests {
     @Test("classifies killed, survived, and no-coverage mutants and resumes cached verdicts")
     func verdictsAndResume() throws {
