@@ -176,12 +176,12 @@ public struct SwiftMutationGenerator: Sendable {
                     if let handle = FileHandle(forWritingAtPath: path) {
                         defer { try? handle.close() }
                         try? handle.seekToEnd()
-                        try? handle.write(contentsOf: line)
+                        handle.write(line)
                     }
                 }
                 // Keep an ordered marker in the process log as well as the durable file marker.
                 // The runner uses the ordering to ensure the failing test came after activation.
-                try? FileHandle.standardError.write(contentsOf: Data(("SWIFT_MUTATION_ACTIVATED:" + id + "\n").utf8))
+                FileHandle.standardError.write(Data(("SWIFT_MUTATION_ACTIVATED:" + id + "\n").utf8))
             }
         }
 

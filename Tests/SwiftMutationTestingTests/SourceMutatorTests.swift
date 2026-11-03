@@ -79,6 +79,8 @@ struct SourceMutatorTests {
         #expect(schema.source.contains("SWIFT_MUTATION_ACTIVATION_FILE"))
         #expect(schema.source.hasPrefix("// swiftlint:disable line_length\n"))
         #expect(schema.source.contains("public enum MutestRuntime"))
+        #expect(schema.source.contains("handle.write(line)"))
+        #expect(!schema.source.contains("write(contentsOf:"))
     }
 
     @Test("inactive schema keeps the original result and records an active mutant once")
