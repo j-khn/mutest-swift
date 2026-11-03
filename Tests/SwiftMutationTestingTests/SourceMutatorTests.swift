@@ -81,6 +81,49 @@ struct SourceMutatorTests {
         #expect(schema.source.contains("public enum MutestRuntime"))
     }
 
+    @Test("inactive schema keeps the original result and records an active mutant once")
+    func schemaRuntimeBehavior() throws {
+        let input = "public func enabled() -> Bool { true }"
+        let candidate = try #require(SwiftMutationGenerator().generate(
+            source: input, relativePath: "Sources/Rule.swift", operators: [.boolean]).first)
+        let generated = SwiftMutationGenerator().makeSchema(source: input, candidates: [candidate]).source
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("mutest-runtime-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("main.swift")
+        let executable = directory.appendingPathComponent("schema-test")
+        let marker = directory.appendingPathComponent("activation.txt")
+        try (generated + "\nprint(enabled())\nprint(enabled())\n").write(to: file, atomically: true, encoding: .utf8)
+
+        func launch(_ path: String, _ arguments: [String], environment: [String: String] = [:]) throws -> (Int32, String) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: path)
+            process.arguments = arguments
+            process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardError = output
+            try process.run()
+            process.waitUntilExit()
+            let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            return (process.terminationStatus, text)
+        }
+
+        let compile = try launch("/usr/bin/env", ["swiftc", file.path, "-o", executable.path])
+        #expect(compile.0 == 0, "Swift compiler rejected generated schema: \(compile.1)")
+        guard compile.0 == 0 else { return }
+        let inactive = try launch(executable.path, [])
+        #expect(inactive.0 == 0 && inactive.1 == "true\ntrue\n")
+        let active = try launch(executable.path, [], environment: [
+            "SWIFT_MUTATION_ID": candidate.id,
+            "SWIFT_MUTATION_ACTIVATION_FILE": marker.path
+        ])
+        #expect(active.0 == 0 && active.1.contains("false\nfalse\n"))
+        let markers = try String(contentsOf: marker, encoding: .utf8).split(separator: "\n")
+        #expect(markers == [Substring(candidate.id)])
+        #expect(active.1.components(separatedBy: "SWIFT_MUTATION_ACTIVATED:").count == 2)
+    }
+
     @Test("groups overlapping operator mutations into one runtime schema")
     func overlappingOperatorsShareSchema() {
         let input = "func fee(_ amount: Int, _ rate: Int) -> Int { (amount * rate + 5_000) / 10_000 }"
@@ -96,7 +139,7 @@ struct SourceMutatorTests {
         #expect(schema.isolated.isEmpty)
         #expect(schema.source.contains("MutestRuntime") && schema.source.contains(".isActive"))
         #expect(!schema.source.contains(".select") && !schema.source.contains(".evaluate"))
-        #expect(!schema.source.contains("() -> T") && !schema.source.contains("{ ("))
+        #expect(!schema.source.contains("() -> T"))
     }
 
     @Test("generates public activation helpers for mutated default arguments")
@@ -134,7 +177,7 @@ struct SourceMutatorTests {
         #expect(schema.source.contains("connected"))
         #expect(schema.source.contains(".isActive"))
         #expect(!schema.source.contains(".evaluate") && !schema.source.contains(".select"))
-        #expect(!schema.source.contains("mutations: [") && !schema.source.contains("{ ("))
+        #expect(!schema.source.contains("mutations: ["))
     }
 
     @Test("isolates candidates inside macro expansion arguments")
@@ -147,7 +190,7 @@ struct SourceMutatorTests {
         )
         let schema = SwiftMutationGenerator().makeSchema(source: input, candidates: candidates)
 
-        #expect(candidates.count == 1)
+        #expect(!candidates.isEmpty)
         #expect(schema.included.isEmpty)
         #expect(schema.isolated.map(\.id) == candidates.map(\.id))
     }

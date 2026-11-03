@@ -150,31 +150,52 @@ public struct SwiftMutationGenerator: Sendable {
 
     private static let runtimeSupportTemplate = #"""
     public enum MutestRuntime {
+        // Read the process environment once. Asking Foundation to recreate its environment
+        // dictionary at every mutated expression can perturb timing-sensitive async tests.
+        private static let activeID = ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"]
+        private static let activationFile = ProcessInfo.processInfo.environment["SWIFT_MUTATION_ACTIVATION_FILE"]
+        private static let recorder = ActivationRecorder()
+
         public static func isActive(_ id: String) -> Bool {
-            guard ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"] == id else { return false }
+            guard activeID == id else { return false }
             mark(id)
             return true
         }
 
         public static func shouldRunOriginal(_ id: String) -> Bool {
-            guard ProcessInfo.processInfo.environment["SWIFT_MUTATION_ID"] == id else { return true }
+            guard activeID == id else { return true }
             mark(id)
             return false
         }
 
         private static func mark(_ id: String) {
-            let line = Data((id + "\n").utf8)
-            if let path = ProcessInfo.processInfo.environment["SWIFT_MUTATION_ACTIVATION_FILE"] {
-                if !FileManager.default.fileExists(atPath: path) { FileManager.default.createFile(atPath: path, contents: nil) }
-                if let handle = FileHandle(forWritingAtPath: path) {
-                    defer { try? handle.close() }
-                    try? handle.seekToEnd()
-                    try? handle.write(contentsOf: line)
+            recorder.recordOnce(id) {
+                let line = Data((id + "\n").utf8)
+                if let path = activationFile {
+                    if !FileManager.default.fileExists(atPath: path) { FileManager.default.createFile(atPath: path, contents: nil) }
+                    if let handle = FileHandle(forWritingAtPath: path) {
+                        defer { try? handle.close() }
+                        try? handle.seekToEnd()
+                        try? handle.write(contentsOf: line)
+                    }
                 }
+                // Keep an ordered marker in the process log as well as the durable file marker.
+                // The runner uses the ordering to ensure the failing test came after activation.
+                try? FileHandle.standardError.write(contentsOf: Data(("SWIFT_MUTATION_ACTIVATED:" + id + "\n").utf8))
             }
-            // Keep an ordered marker in the process log as well as the durable file marker.
-            // The runner uses the ordering to ensure the failing test came after activation.
-            try? FileHandle.standardError.write(contentsOf: Data(("SWIFT_MUTATION_ACTIVATED:" + id + "\n").utf8))
+        }
+
+        private final class ActivationRecorder: @unchecked Sendable {
+            private let lock = NSLock()
+            private var recorded = Set<String>()
+
+            func recordOnce(_ id: String, body: () -> Void) {
+                lock.lock()
+                defer { lock.unlock() }
+                guard !recorded.contains(id) else { return }
+                body()
+                recorded.insert(id)
+            }
         }
     }
     """#

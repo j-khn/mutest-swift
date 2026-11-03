@@ -243,7 +243,9 @@ Mutation types include changing comparisons, Boolean values, logical and arithme
 ## What affects run time and cache reuse?
 
 - Xcode simulator runs can use up to `--workers` workers (default: `2`). Swift package runs use parallel workers with Swift Testing; packages that use XCTest run serially.
-- Xcode builds use at most two build jobs. The first build finishes before simulator workers boot, and workers boot one at a time. Mutant tests still run in parallel after startup.
+- Xcode builds use at most two build jobs. The original-code build finishes before simulator workers boot, and workers boot one at a time. Mutant tests still run in parallel after startup.
+- A source folder can contain hundreds of mutants. Xcode starts a test command for each one, so a 365-mutant run with one worker can take over an hour even if the selected tests take only seconds inside the simulator. The CLI shows the file and mutant counts and a time guide before mutant runs. For a quick local check, pass one or more specific files with `--mutation-source`; the selected tests stay the same.
+- Before running mutants, Xcode tests must pass on the original code and on the compiled schema with all mutants inactive. If the inactive schema fails, the tool retries it, checks the original tests again, and identifies a smaller incompatible group only when the original tests stay stable. It stops without a score rather than reporting false kills.
 - Xcode build files and downloaded dependencies stay in a temporary folder outside your copied source tree, so project-wide lint plugins do not scan that build folder. The folder is removed when the run finishes or fails. Your project's lint plugins still run normally.
 - A verified test failure can end that mutant's run early. Survivors and mutants with no coverage finish the selected test scope.
 - `--mutant-timeout` limits the complete test command for one mutant, including Xcode test-host startup. It defaults to 30 seconds. Increase it for slow integration tests—for example, `--mutant-timeout 90` for a WebSocket or WebRTC test target.

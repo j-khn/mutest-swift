@@ -20,14 +20,17 @@ private final class FakeXcode: @unchecked Sendable {
     let mismatchBaseline: Bool
     let failInitialSchemaOnly: Bool
     let failInactiveSchemaBaseline: Bool
+    let failOriginalRecheck: Bool
     let failWithoutActivation: Bool
     init(failSchema: Bool = false, failOriginalBuild: Bool = false, timeoutFirstAttempt: Bool = false,
          mismatchBaseline: Bool = false, failInitialSchemaOnly: Bool = false,
-         failInactiveSchemaBaseline: Bool = false, failWithoutActivation: Bool = false) {
+         failInactiveSchemaBaseline: Bool = false, failOriginalRecheck: Bool = false,
+         failWithoutActivation: Bool = false) {
         self.failSchema = failSchema; self.timeoutFirstAttempt = timeoutFirstAttempt; self.mismatchBaseline = mismatchBaseline
         self.failOriginalBuild = failOriginalBuild
         self.failInitialSchemaOnly = failInitialSchemaOnly
         self.failInactiveSchemaBaseline = failInactiveSchemaBaseline
+        self.failOriginalRecheck = failOriginalRecheck
         self.failWithoutActivation = failWithoutActivation
     }
 
@@ -36,7 +39,7 @@ private final class FakeXcode: @unchecked Sendable {
         func argument(_ option: String) -> String { command.arguments.firstIndex(of: option).map { command.arguments[$0 + 1] } ?? "" }
         var output = "", exit: Int32 = 0, timeout = false
         if command.arguments.contains("build-for-testing") {
-            let initial = ["schema-build.log", "baseline-build.log"].contains(command.outputFile.lastPathComponent)
+            let initial = command.outputFile.lastPathComponent == "baseline-build.log"
             let hasBooted = simulators.snapshot().commands.contains { $0.first == "boot" }
             lock.lock()
             builds.append(command)
@@ -79,6 +82,7 @@ private final class FakeXcode: @unchecked Sendable {
                 lock.lock(); activeBaselines -= 1; lock.unlock()
                 output = "Executed \(mismatchBaseline && file.path.contains("worker-2") ? 3 : 2) tests\n"
                 if failInactiveSchemaBaseline && command.outputFile.lastPathComponent.hasPrefix("inactive-schema-worker-") { exit = 65 }
+                if failOriginalRecheck && command.outputFile.lastPathComponent.hasPrefix("baseline-recheck-worker-") { exit = 65 }
             }
         }
         return .init(exitCode: exit, timedOut: timeout, elapsed: 0.05, output: output, outputFile: command.outputFile)
@@ -115,6 +119,8 @@ struct XcodeExecutionTests {
         #expect(serialFake.maximumActive == 1 && parallelFake.maximumActive == 2)
         #expect(Set(parallelFake.attempts.map { $0.1 }).count == 2)
         #expect(parallel.baselineCounts == [2, 2])
+        #expect(parallel.baselineRunCount == 4)
+        #expect(parallel.baselineTestExecutionCount == 8)
         #expect(parallelFake.maximumActiveBaselines == 2)
         #expect(parallel.mutantTestRunCount == parallel.records.count)
         #expect(parallelFake.simulators.snapshot().devices.count == 1)
@@ -143,6 +149,7 @@ struct XcodeExecutionTests {
         let result = try campaign(fake)
         #expect(result.records.values.allSatisfy { $0.activated && $0.status == .survived })
         #expect(result.baselineCounts.count == 2)
+        #expect(result.baselineCounts == [2, 2])
         #expect(result.timings.isolatedBuildSeconds > 0)
         #expect(!fake.initialBuildSawBoot)
         #expect(fake.maximumActiveBuilds == 1)
@@ -168,7 +175,7 @@ struct XcodeExecutionTests {
         #expect(fake.attempts.isEmpty)
         #expect(!fake.simulators.snapshot().commands.contains { $0.first == "boot" })
         #expect(fake.simulators.snapshot().devices.count == 1)
-        #expect(fake.builds.count == 2)
+        #expect(fake.builds.count == 1)
         for command in fake.builds {
             let index = try #require(command.arguments.firstIndex(of: "-derivedDataPath"))
             #expect(!FileManager.default.fileExists(atPath: command.arguments[index + 1]))
@@ -190,9 +197,37 @@ struct XcodeExecutionTests {
             _ = try campaign(fake, workers: 1)
             Issue.record("Expected the inactive schema baseline to fail")
         } catch let error as MutationEngineError {
-            #expect(error.description.contains("Inactive mutation schema failed"))
+            #expect(error.description.contains("Inactive schema changes the selected tests for mutant"))
         }
         #expect(fake.attempts.isEmpty)
+    }
+
+    @Test("a first-build inactive schema failure is diagnosed before mutant tests")
+    func initialInactiveSchemaBaseline() throws {
+        let fake = FakeXcode(failInactiveSchemaBaseline: true)
+        do {
+            _ = try campaign(fake, workers: 1)
+            Issue.record("Expected the inactive schema baseline to fail")
+        } catch let error as MutationEngineError {
+            #expect(error.description.contains("Rules.swift:1"))
+            #expect(error.description.contains("Inactive schema changes the selected tests"))
+        }
+        #expect(fake.attempts.isEmpty)
+        #expect(fake.builds.first?.outputFile.lastPathComponent == "baseline-build.log")
+        #expect(fake.simulators.snapshot().devices.count == 1)
+    }
+
+    @Test("an unstable original baseline is reported before blaming the schema")
+    func originalBaselineFlake() throws {
+        let fake = FakeXcode(failInactiveSchemaBaseline: true, failOriginalRecheck: true)
+        do {
+            _ = try campaign(fake, workers: 1)
+            Issue.record("Expected an unstable original baseline")
+        } catch let error as MutationEngineError {
+            #expect(error.description.contains("Original tests did not pass consistently"))
+        }
+        #expect(fake.attempts.isEmpty)
+        #expect(fake.simulators.snapshot().devices.count == 1)
     }
 
     @Test("a failing test without mutant activation stops the campaign")

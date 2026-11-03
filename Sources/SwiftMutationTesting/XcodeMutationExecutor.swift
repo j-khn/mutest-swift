@@ -7,6 +7,8 @@ private final class XcodeExecutionState: @unchecked Sendable {
     private var retries: [MutationCandidate] = []
     private var errors: [any Error] = []
     private var baselineCounts: [Int] = []
+    private var baselineRunCount = 0
+    private var baselineTestExecutionCount = 0
     private var testRuns = 0
     private var mutantTestCaseExecutionCount = 0
     private var mutantTestRunCountWithoutReportedCaseCount = 0
@@ -20,7 +22,13 @@ private final class XcodeExecutionState: @unchecked Sendable {
         for bundle in bundles { try? FileManager.default.removeItem(at: bundle) }
     }
 
-    func baseline(_ count: Int) { lock.lock(); baselineCounts.append(count); lock.unlock() }
+    func baseline(_ count: Int) {
+        lock.lock(); baselineCounts.append(count); baselineRunCount += 1
+        baselineTestExecutionCount += count; lock.unlock()
+    }
+    func validationRun(_ count: Int) {
+        lock.lock(); baselineRunCount += 1; baselineTestExecutionCount += count; lock.unlock()
+    }
     func testRun(_ details: MutantTestRunDetails) {
         lock.lock()
         testRuns += 1
@@ -35,9 +43,9 @@ private final class XcodeExecutionState: @unchecked Sendable {
     func retry(_ candidate: MutationCandidate, record: MutantRecord) { lock.lock(); retries.append(candidate); records[candidate.id] = record; lock.unlock() }
     func finish(_ record: MutantRecord, warnings: [IntegrityWarning]) { lock.lock(); records[record.id] = record; self.warnings += warnings; lock.unlock() }
     func takeRetries() -> [MutationCandidate] { lock.lock(); defer { lock.unlock() }; let result = retries; retries = []; return result }
-    func snapshot() -> (records: [String: MutantRecord], warnings: [IntegrityWarning], errors: [any Error], baselineCounts: [Int], testRuns: Int, mutantTestCaseExecutionCount: Int, mutantTestRunCountWithoutReportedCaseCount: Int, mutantTestRuns: [MutantTestRunDetails], isolatedBuildSeconds: TimeInterval) {
+    func snapshot() -> (records: [String: MutantRecord], warnings: [IntegrityWarning], errors: [any Error], baselineCounts: [Int], baselineRunCount: Int, baselineTestExecutionCount: Int, testRuns: Int, mutantTestCaseExecutionCount: Int, mutantTestRunCountWithoutReportedCaseCount: Int, mutantTestRuns: [MutantTestRunDetails], isolatedBuildSeconds: TimeInterval) {
         lock.lock(); defer { lock.unlock() }
-        return (records, warnings, errors, baselineCounts, testRuns, mutantTestCaseExecutionCount, mutantTestRunCountWithoutReportedCaseCount, mutantTestRuns, isolatedBuildSeconds)
+        return (records, warnings, errors, baselineCounts, baselineRunCount, baselineTestExecutionCount, testRuns, mutantTestCaseExecutionCount, mutantTestRunCountWithoutReportedCaseCount, mutantTestRuns, isolatedBuildSeconds)
     }
 }
 
@@ -46,12 +54,18 @@ struct XcodeMutationExecutionResult {
     var warnings: [IntegrityWarning]
     var timings: MutationTimings
     var baselineCounts: [Int]
+    var baselineRunCount: Int
+    var baselineTestExecutionCount: Int
     var mutantTestRunCount: Int
     var mutantTestCaseExecutionCount: Int
     var mutantTestRunCountWithoutReportedCaseCount: Int
     var mutantTestRuns: [MutantTestRunDetails]
     var workerCount: Int
     var simulatorSetupSeconds: TimeInterval
+}
+
+private struct InactiveSchemaFailure: Error {
+    let log: URL
 }
 
 /// Xcode orchestration deliberately lives outside the language-neutral contract and SwiftPM
@@ -110,6 +124,21 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         var timings = MutationTimings()
         let builderData = workspace.derivedData
         mutationLog("Building test products before simulator startup; Xcode builds use at most 2 jobs. Build files are outside the source tree.")
+        // Always establish a baseline from the caller's original sources. An inactive
+        // schema can compile yet change timing or behavior, so it is not a valid baseline.
+        let original = try build(root: sandbox, derivedData: builderData, worker: pool.workers[0], label: "baseline-build")
+        timings.schemaBuildSeconds += original.elapsed
+        guard !original.timedOut, original.exitCode == 0 else {
+            throw MutationEngineError.baselineBuildFailed(log: original.outputFile, timedOut: original.timedOut)
+        }
+        mutationLog("Original test products built. Starting simulator workers one at a time…")
+        let simulatorSetupSeconds = try pool.waitUntilReady()
+        timings.baselineSeconds += try prepareAndValidateWorkers(pool: pool, derivedData: builderData)
+        if pool.workers.contains(where: { $0.artifacts?.canStopEarlyAfterActivatedFailure != true }) {
+            mutationLog("Xcode test products do not provide host app IDs for every test target; mutant failures will finish the selected tests before the simulator is reused.")
+        }
+        let projectedMinutes = timings.baselineSeconds * Double(candidates.count) / Double(workerCount) / 60
+        mutationLog("Time guide: \(candidates.count) mutant test launches at the original baseline pace would take about \(Int(projectedMinutes.rounded())) minutes with \(workerCount) worker(s), plus builds. Actual time varies by mutant.")
         let generator = SwiftMutationGenerator()
         var schemaCandidates: [MutationCandidate] = []
         var isolatedCandidates: [MutationCandidate] = []
@@ -119,24 +148,10 @@ final class XcodeMutationExecutor: @unchecked Sendable {
             isolatedCandidates += schema.isolated
             try schema.source.write(to: sandbox.appendingPathComponent(path), atomically: true, encoding: .utf8)
         }
+        mutationLog("Schema plan: \(schemaCandidates.count) shared-schema mutants; \(isolatedCandidates.count) require separate builds.")
         let initialBuild = try build(root: sandbox, derivedData: builderData, worker: pool.workers[0], label: "schema-build")
         timings.schemaBuildSeconds += initialBuild.elapsed
         let schemaFailed = initialBuild.timedOut || initialBuild.exitCode != 0
-        if schemaFailed {
-            try restoreSources(in: sandbox)
-            // A failed schematized build can leave an incomplete .xctestrun manifest.
-            // Force the successful original-source build to write a fresh manifest.
-            try XcodeTestArtifacts.removeGeneratedManifests(derivedData: builderData)
-            let original = try build(root: sandbox, derivedData: builderData, worker: pool.workers[0], label: "baseline-build")
-            timings.schemaBuildSeconds += original.elapsed
-            guard !original.timedOut, original.exitCode == 0 else { throw MutationEngineError.baselineBuildFailed(log: original.outputFile, timedOut: original.timedOut) }
-        }
-        mutationLog("Test products built. Starting simulator workers one at a time…")
-        let simulatorSetupSeconds = try pool.waitUntilReady()
-        timings.baselineSeconds += try prepareAndValidateWorkers(pool: pool, derivedData: builderData)
-        if pool.workers.contains(where: { $0.artifacts?.canStopEarlyAfterActivatedFailure != true }) {
-            mutationLog("Xcode test products do not provide host app IDs for every test target; mutant failures will finish the selected tests before the simulator is reused.")
-        }
         let mutationStartedAt = Date()
         let ordered = candidates.sorted {
             let left = historicalDurations[$0.id] ?? 0, right = historicalDurations[$1.id] ?? 0
@@ -144,12 +159,46 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         }
         let order = Dictionary(uniqueKeysWithValues: ordered.enumerated().map { ($0.element.id, $0.offset) })
         func sorted(_ batch: [MutationCandidate]) -> [MutationCandidate] { batch.sorted { order[$0.id, default: 0] < order[$1.id, default: 0] } }
-        if !schemaFailed {
-            try executeBatch(sorted(schemaCandidates), pool: pool, isolated: false)
-        } else {
-            // Rebuild smaller groups, draining workers before replacing their frozen snapshots.
-            func narrowed(_ batch: [MutationCandidate], afterFailure failure: SchemaBuildFailure? = nil) throws {
+        var originalRechecked = false
+        func recheckOriginalAfterSchemaFailure() throws {
+            guard !originalRechecked else { return }
+            originalRechecked = true
+            mutationLog("Inactive schema failed twice; checking the original tests again before attributing the failure to generated code.")
+            try restoreSources(in: sandbox)
+            try XcodeTestArtifacts.removeGeneratedManifests(derivedData: builderData)
+            let rebuild = try build(root: sandbox, derivedData: builderData, worker: pool.workers[0], label: "baseline-recheck-build")
+            timings.schemaBuildSeconds += rebuild.elapsed
+            guard !rebuild.timedOut, rebuild.exitCode == 0 else {
+                throw MutationEngineError.baselineBuildFailed(log: rebuild.outputFile, timedOut: rebuild.timedOut)
+            }
+            try snapshotWorkers(pool: pool, derivedData: builderData)
+            for worker in pool.workers {
+                let result = try runTests(worker: worker, mutantID: nil,
+                    timeout: TimeInterval(configuration.timeouts.baselineSeconds),
+                    label: "baseline-recheck-worker-\(worker.number)-\(UUID().uuidString)")
+                guard !result.timedOut, result.exitCode == 0,
+                      TestExecutionCount.parse(result.output) == state.snapshot().baselineCounts.first else {
+                    throw MutationEngineError.invalidProject("Original tests did not pass consistently. Check the flaky test or simulator before mutation testing. No mutation score was produced. Log: \(result.outputFile.path)")
+                }
+                state.validationRun(TestExecutionCount.parse(result.output) ?? 0)
+            }
+        }
+        // Rebuild smaller groups when compilation or the inactive baseline fails. A single
+        // bad schema must never turn hundreds of unrelated tests into false kills.
+        func narrowed(_ batch: [MutationCandidate], afterFailure failure: SchemaBuildFailure? = nil,
+                      afterInactiveFailure inactiveLog: URL? = nil, diagnosingInactive: Bool = false) throws {
                 guard !batch.isEmpty else { return }
+                if let inactiveLog {
+                    if batch.count == 1 {
+                        let candidate = batch[0]
+                        throw MutationEngineError.invalidProject("Inactive schema changes the selected tests for mutant \(candidate.id) (\(candidate.source):\(candidate.line), \(candidate.operatorID.rawValue)); no mutation score was produced. Log: \(inactiveLog.path)")
+                    }
+                    mutationLog("Inactive schema changed test behavior for \(batch.count) mutants; narrowing to identify the incompatible mutation before running tests.")
+                    let middle = batch.count / 2
+                    try narrowed(Array(batch[..<middle]), diagnosingInactive: true)
+                    try narrowed(Array(batch[middle...]), diagnosingInactive: true)
+                    throw MutationEngineError.invalidProject("The combined inactive schema changes the selected tests, although each smaller group passed separately. No mutation score was produced. Log: \(inactiveLog.path)")
+                }
                 if let failure {
                     let implicated = SchemaBuildFailureAttribution.implicatedCandidates(
                         in: failure.output,
@@ -171,12 +220,12 @@ final class XcodeMutationExecutor: @unchecked Sendable {
                     if !implicated.isEmpty {
                         let implicatedIDs = Set(implicated.map(\.id))
                         isolatedCandidates += implicated
-                        try narrowed(batch.filter { !implicatedIDs.contains($0.id) })
+                        try narrowed(batch.filter { !implicatedIDs.contains($0.id) }, diagnosingInactive: diagnosingInactive)
                         return
                     }
                     let middle = batch.count / 2
-                    try narrowed(Array(batch[..<middle]))
-                    try narrowed(Array(batch[middle...]))
+                    try narrowed(Array(batch[..<middle]), diagnosingInactive: diagnosingInactive)
+                    try narrowed(Array(batch[middle...]), diagnosingInactive: diagnosingInactive)
                     return
                 }
                 for (path, source) in sources {
@@ -186,15 +235,42 @@ final class XcodeMutationExecutor: @unchecked Sendable {
                 let result = try build(root: sandbox, derivedData: builderData, worker: pool.workers[0], label: "schema-narrowed-\(UUID().uuidString)")
                 timings.schemaBuildSeconds += result.elapsed
                 if result.timedOut || result.exitCode != 0 {
-                    try narrowed(batch, afterFailure: .init(output: result.output, log: result.outputFile, timedOut: result.timedOut))
+                    try narrowed(batch, afterFailure: .init(output: result.output, log: result.outputFile, timedOut: result.timedOut), diagnosingInactive: diagnosingInactive)
                     return
                 }
                 let snapshotsStarted = Date()
                 try snapshotWorkers(pool: pool, derivedData: builderData)
                 timings.sandboxCopySeconds += Date().timeIntervalSince(snapshotsStarted)
-                try validateInactiveSchema(pool: pool)
-                try executeBatch(sorted(batch), pool: pool, isolated: false)
+                do { try validateInactiveSchema(pool: pool) }
+                catch let failure as InactiveSchemaFailure {
+                    // A one-off test failure is an unstable baseline, not evidence that
+                    // a particular mutation is unsafe. Retry once before bisection.
+                    do { try validateInactiveSchema(pool: pool) }
+                    catch let repeated as InactiveSchemaFailure {
+                        try recheckOriginalAfterSchemaFailure()
+                        try narrowed(batch, afterInactiveFailure: repeated.log)
+                        return
+                    }
+                    throw MutationEngineError.invalidProject("Inactive schema baseline was unstable: one run failed and the retry passed. No mutation score was produced. First failure: \(failure.log.path)")
+                }
+                if !diagnosingInactive { try executeBatch(sorted(batch), pool: pool, isolated: false) }
+        }
+        if !schemaFailed {
+            let snapshotsStarted = Date()
+            try snapshotWorkers(pool: pool, derivedData: builderData)
+            timings.sandboxCopySeconds += Date().timeIntervalSince(snapshotsStarted)
+            do { try validateInactiveSchema(pool: pool) }
+            catch let failure as InactiveSchemaFailure {
+                do { try validateInactiveSchema(pool: pool) }
+                catch let repeated as InactiveSchemaFailure {
+                    try recheckOriginalAfterSchemaFailure()
+                    try narrowed(sorted(schemaCandidates), afterInactiveFailure: repeated.log)
+                    throw MutationEngineError.invalidProject("Inactive schema changed the selected tests; no mutation score was produced. Log: \(repeated.log.path)")
+                }
+                throw MutationEngineError.invalidProject("Inactive schema baseline was unstable: one run failed and the retry passed. No mutation score was produced. First failure: \(failure.log.path)")
             }
+            try executeBatch(sorted(schemaCandidates), pool: pool, isolated: false)
+        } else {
             try narrowed(sorted(schemaCandidates), afterFailure: .init(output: initialBuild.output, log: initialBuild.outputFile, timedOut: initialBuild.timedOut))
         }
         if !isolatedCandidates.isEmpty {
@@ -214,11 +290,11 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         let cleanupWarnings = pool.cleanup()
         cleaned = true
         timings.cleanupSeconds = Date().timeIntervalSince(cleanupStarted)
-        let baselineTestExecutionCount = completed.baselineCounts.reduce(0, +)
         let baselineTestCount = completed.baselineCounts.first.map(String.init) ?? "unavailable"
-        mutationLog("Test counts: \(baselineTestCount) baseline tests per worker (\(baselineTestExecutionCount) baseline executions); \(completed.mutantTestCaseExecutionCount) mutant test cases reported across \(completed.testRuns) mutant test runs; \(completed.mutantTestRunCountWithoutReportedCaseCount) mutant runs did not report a case count.")
+        mutationLog("Test counts: \(baselineTestCount) original tests per worker; \(completed.baselineTestExecutionCount) test cases across \(completed.baselineRunCount) original/schema validation runs; \(completed.mutantTestCaseExecutionCount) mutant test cases across \(completed.testRuns) mutant test runs; \(completed.mutantTestRunCountWithoutReportedCaseCount) mutant runs did not report a case count.")
         return .init(records: completed.records, warnings: completed.warnings + cleanupWarnings, timings: timings,
-                     baselineCounts: completed.baselineCounts, mutantTestRunCount: completed.testRuns,
+                     baselineCounts: completed.baselineCounts, baselineRunCount: completed.baselineRunCount,
+                     baselineTestExecutionCount: completed.baselineTestExecutionCount, mutantTestRunCount: completed.testRuns,
                      mutantTestCaseExecutionCount: completed.mutantTestCaseExecutionCount,
                      mutantTestRunCountWithoutReportedCaseCount: completed.mutantTestRunCountWithoutReportedCaseCount,
                      mutantTestRuns: completed.mutantTestRuns,
@@ -291,12 +367,12 @@ final class XcodeMutationExecutor: @unchecked Sendable {
                 timeout: TimeInterval(configuration.timeouts.baselineSeconds),
                 label: "inactive-schema-worker-\(worker.number)-\(UUID().uuidString)")
             guard !result.timedOut, result.exitCode == 0 else {
-                throw MutationEngineError.invalidProject("Inactive mutation schema failed its baseline tests; no mutation score was produced. Log: \(result.outputFile.path)")
+                throw InactiveSchemaFailure(log: result.outputFile)
             }
             guard let count = TestExecutionCount.parse(result.output), count == expected else {
-                throw MutationEngineError.invalidProject("Inactive mutation schema ran a different number of tests; expected \(expected). Log: \(result.outputFile.path)")
+                throw InactiveSchemaFailure(log: result.outputFile)
             }
-            state.baseline(expected)
+            state.validationRun(count)
         }
     }
 

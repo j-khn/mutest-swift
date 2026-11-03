@@ -128,12 +128,15 @@ struct MutationEngineIntegrationTests {
         #expect(FileManager.default.fileExists(atPath: output.appendingPathComponent("logs/isolated-build-\(invalidArithmetic.id).log").path))
     }
 
-    @Test("runs isolated statement mutants in independent Swift Testing workers")
-    func parallelIsolatedStatementMutants() throws {
+    @Test("runs two statement mutants with Swift Testing workers")
+    func parallelStatementMutants() throws {
         let source = """
         public enum Rules {
-            public static func left() { print("left") }
-            public static func right() { print("right") }
+            public static func both() {
+                record("left")
+                record("right")
+            }
+            private static func record(_ value: String) {}
         }
         """
         let fixture = try makePackage(
@@ -144,8 +147,7 @@ struct MutationEngineIntegrationTests {
 
             @Test("calls both statement functions")
             func callsFunctions() {
-                Rules.left()
-                Rules.right()
+                Rules.both()
             }
             """
         )
@@ -159,7 +161,7 @@ struct MutationEngineIntegrationTests {
         #expect(report.mutants.count == 2)
         #expect(report.summary.survived == 2)
         #expect(report.mutants.allSatisfy { $0.activated && $0.status == .survived })
-        #expect(report.mutants.allSatisfy { FileManager.default.fileExists(atPath: output.appendingPathComponent("logs/isolated-build-\($0.id).log").path) })
+        #expect(report.mutants.allSatisfy { FileManager.default.fileExists(atPath: output.appendingPathComponent("logs/mutant-\($0.id).log").path) })
     }
 
     @Test("keeps expression-bodied side-effect mutants from forcing the whole schema into isolated builds")
@@ -198,7 +200,7 @@ struct MutationEngineIntegrationTests {
         let isolatedArithmeticBuildLog = output.appendingPathComponent("logs/isolated-build-\(arithmetic.id).log")
 
         #expect(report.summary.killed == 1)
-        #expect(report.summary.unbuildable == 1)
+        #expect(report.summary.unbuildable == 0)
         #expect(FileManager.default.fileExists(atPath: sharedSchemaMutantLog.path))
         #expect(!FileManager.default.fileExists(atPath: isolatedArithmeticBuildLog.path))
     }

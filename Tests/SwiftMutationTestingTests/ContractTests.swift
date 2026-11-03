@@ -27,7 +27,7 @@ struct ContractTests {
 
     @Test("supports an explicit per-mutant timeout in JSON configuration")
     func explicitMutantTimeout() throws {
-        let data = Data(#"{"timeouts":{"mutantSeconds":75}}"#.utf8)
+        let data = Data(#"{"project":{"kind":"swiftPackage","path":"."},"timeouts":{"mutantSeconds":75}}"#.utf8)
         let config = try JSONDecoder().decode(RunConfiguration.self, from: data)
         #expect(config.timeouts.mutantSeconds == 75)
     }

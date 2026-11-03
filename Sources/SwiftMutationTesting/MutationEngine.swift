@@ -355,6 +355,9 @@ public struct MutationEngine: Sendable {
         candidates.sort { ($0.source, $0.span.start) < ($1.source, $1.span.start) }
         timings.sourceDiscoverySeconds = Date().timeIntervalSince(sourceDiscoveryStarted)
         mutationLog("Mutation discovery complete: \(sourceFiles.count) source files, \(candidates.count) candidates.")
+        if simulatorTemplate != nil && candidates.count >= 100 {
+            mutationLog("Large Xcode campaign: each of the \(candidates.count) mutants needs a separate Xcode test launch. A folder passed to --mutation-source includes every Swift file below it; pass specific files to shorten this run while keeping the same selected tests.")
+        }
 
         var digestConfiguration = configuration
         digestConfiguration.project.path = configuration.project.kind == .swiftPackage ? "." : adapterProject.path
@@ -858,8 +861,8 @@ public struct MutationEngine: Sendable {
             totalDurationSeconds: Date().timeIntervalSince(runStartedAt),
             requestedWorkerCount: configuration.parallelism,
             activeWorkerCount: xcodeExecution?.workerCount ?? executionConcurrency(root: root, projectKind: configuration.project.kind, requested: configuration.parallelism, candidateCount: remaining.count),
-            baselineRunCount: xcodeExecution?.baselineCounts.count ?? 1,
-            baselineTestExecutionCount: xcodeExecution?.baselineCounts.reduce(0, +) ?? runMetricsSnapshot.baselineTestCount,
+            baselineRunCount: xcodeExecution?.baselineRunCount ?? 1,
+            baselineTestExecutionCount: xcodeExecution?.baselineTestExecutionCount ?? runMetricsSnapshot.baselineTestCount,
             mutantTestCaseExecutionCount: xcodeExecution?.mutantTestCaseExecutionCount,
             mutantTestRunCountWithoutReportedCaseCount: xcodeExecution?.mutantTestRunCountWithoutReportedCaseCount ?? 0,
             mutantTestRuns: xcodeExecution?.mutantTestRuns ?? [],
@@ -1155,7 +1158,7 @@ public struct MutationEngine: Sendable {
             content.append(0)
             content.append(contentsOf: (environment[key] ?? "").utf8)
         }
-        content.append(contentsOf: "\u{0}0.3.0-xcode-workers-v5\u{0}\(runtimeFingerprint)\u{0}mutest-swift-cache-v5".utf8)
+        content.append(contentsOf: "\u{0}0.3.0-xcode-workers-v6\u{0}\(runtimeFingerprint)\u{0}mutest-swift-cache-v6".utf8)
         return SHA256Digest.hash(content)
     }
 
