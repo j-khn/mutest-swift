@@ -38,6 +38,7 @@ struct MutationEngineIntegrationTests {
         configuration.cache.path = cache.path
 
         let first = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+        printBuildDiagnosticsIfUnexpected(for: first, expectedUnbuildable: 0, output: output)
         #expect(first.mutants.count == 3)
         #expect(first.summary.killed == 1)
         #expect(first.summary.survived == 1)
@@ -117,6 +118,7 @@ struct MutationEngineIntegrationTests {
         let configuration = configuration(for: fixture.root, operators: [.arithmetic, .boolean])
 
         let report = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+        printBuildDiagnosticsIfUnexpected(for: report, expectedUnbuildable: 1, output: output)
         let candidates = SwiftMutationGenerator().generate(source: source, relativePath: "Sources/Logic/Rules.swift", operators: [.arithmetic, .boolean])
         let boolean = try #require(candidates.first(where: { $0.operatorID == .boolean }))
         let invalidArithmetic = try #require(candidates.first(where: { $0.operatorID == .arithmetic }))
@@ -158,6 +160,7 @@ struct MutationEngineIntegrationTests {
         configuration.parallelism = 2
 
         let report = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+        printBuildDiagnosticsIfUnexpected(for: report, expectedUnbuildable: 0, output: output)
         #expect(report.mutants.count == 2)
         #expect(report.summary.survived == 2)
         #expect(report.mutants.allSatisfy { $0.activated && $0.status == .survived })
@@ -191,6 +194,7 @@ struct MutationEngineIntegrationTests {
         let configuration = configuration(for: fixture.root, testName: "checks arithmetic and clamping", operators: [.arithmetic, .removeSideEffects])
 
         let report = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+        printBuildDiagnosticsIfUnexpected(for: report, expectedUnbuildable: 0, output: output)
         let arithmetic = try #require(SwiftMutationGenerator().generate(
             source: source,
             relativePath: "Sources/Logic/Rules.swift",
@@ -271,6 +275,7 @@ struct MutationEngineIntegrationTests {
         configuration.timeouts.mutantSeconds = 1
 
         let report = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+        printBuildDiagnosticsIfUnexpected(for: report, expectedUnbuildable: 0, output: output)
         #expect(report.summary.timedOut == 2)
         #expect(report.summary.detected == 1)
         #expect(report.summary.score == 1)
@@ -313,6 +318,7 @@ struct MutationEngineIntegrationTests {
         configuration.timeouts.retryMultiplier = 2
 
         let report = try MutationEngine().run(configuration: configuration, outputDirectory: output)
+        printBuildDiagnosticsIfUnexpected(for: report, expectedUnbuildable: 0, output: output)
         #expect(report.mutants.count == 2)
         #expect(report.summary.timedOut == 0)
         #expect(report.summary.survived == 2)
@@ -356,5 +362,27 @@ struct MutationEngineIntegrationTests {
         let testFile = testDirectory.appendingPathComponent("RulesTests.swift")
         try tests.write(to: testFile, atomically: true, encoding: .utf8)
         return (root, testFile)
+    }
+
+    /// Integration fixtures keep their workspaces temporary, so dump build output before
+    /// cleanup when mutants unexpectedly fail to compile. This makes hosted CI failures
+    /// diagnosable from the test log without retaining large fixture directories.
+    private func printBuildDiagnosticsIfUnexpected(for report: MutationReport, expectedUnbuildable: Int, output: URL) {
+        guard report.summary.unbuildable > expectedUnbuildable else { return }
+        print("[integration diagnostics] \(report.summary.unbuildable) mutant(s) were unbuildable:")
+        for mutant in report.mutants where mutant.status == .unbuildable {
+            print("[integration diagnostics] \(mutant.source):\(mutant.line) \(mutant.operatorID.rawValue): \(mutant.message ?? "no build error message")")
+        }
+
+        let logsDirectory = output.appendingPathComponent("logs", isDirectory: true)
+        let buildLogs = ((try? FileManager.default.contentsOfDirectory(at: logsDirectory, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.lastPathComponent.contains("build") }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        for log in buildLogs {
+            guard let contents = try? String(contentsOf: log, encoding: .utf8), !contents.isEmpty else { continue }
+            let lines = contents.split(whereSeparator: \.isNewline)
+            print("[integration diagnostics] --- \(log.lastPathComponent) (last 35 lines) ---")
+            print(lines.suffix(35).joined(separator: "\n"))
+        }
     }
 }
