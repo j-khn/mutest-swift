@@ -18,9 +18,17 @@ private final class FakeXcode: @unchecked Sendable {
     let failOriginalBuild: Bool
     let timeoutFirstAttempt: Bool
     let mismatchBaseline: Bool
-    init(failSchema: Bool = false, failOriginalBuild: Bool = false, timeoutFirstAttempt: Bool = false, mismatchBaseline: Bool = false) {
+    let failInitialSchemaOnly: Bool
+    let failInactiveSchemaBaseline: Bool
+    let failWithoutActivation: Bool
+    init(failSchema: Bool = false, failOriginalBuild: Bool = false, timeoutFirstAttempt: Bool = false,
+         mismatchBaseline: Bool = false, failInitialSchemaOnly: Bool = false,
+         failInactiveSchemaBaseline: Bool = false, failWithoutActivation: Bool = false) {
         self.failSchema = failSchema; self.timeoutFirstAttempt = timeoutFirstAttempt; self.mismatchBaseline = mismatchBaseline
         self.failOriginalBuild = failOriginalBuild
+        self.failInitialSchemaOnly = failInitialSchemaOnly
+        self.failInactiveSchemaBaseline = failInactiveSchemaBaseline
+        self.failWithoutActivation = failWithoutActivation
     }
 
     func run(_ command: CommandSpec) throws -> CommandResult {
@@ -43,7 +51,8 @@ private final class FakeXcode: @unchecked Sendable {
                 lock.unlock()
             }
             Thread.sleep(forTimeInterval: 0.01)
-            if failOriginalBuild || (failSchema && command.outputFile.lastPathComponent.hasPrefix("schema-")) { exit = 65 }
+            if failOriginalBuild || (failSchema && command.outputFile.lastPathComponent.hasPrefix("schema-"))
+                || (failInitialSchemaOnly && command.outputFile.lastPathComponent == "schema-build.log") { exit = 65 }
             else {
                 let products = URL(fileURLWithPath: argument("-derivedDataPath")).appendingPathComponent("Build/Products")
                 try FileManager.default.createDirectory(at: products, withIntermediateDirectories: true)
@@ -61,13 +70,15 @@ private final class FakeXcode: @unchecked Sendable {
                 attempts.append((id, destination, command.timeout)); lock.unlock()
                 Thread.sleep(forTimeInterval: 0.05)
                 lock.lock(); active -= 1; lock.unlock()
-                output = "SWIFT_MUTATION_ACTIVATED:\(id)\nExecuted 2 tests\n"
+                output = failWithoutActivation ? "Executed 2 tests\n" : "SWIFT_MUTATION_ACTIVATED:\(id)\nExecuted 2 tests\n"
+                if failWithoutActivation { exit = 65 }
                 timeout = timeoutFirstAttempt && command.timeout == 10
             } else {
                 lock.lock(); activeBaselines += 1; maximumActiveBaselines = max(maximumActiveBaselines, activeBaselines); lock.unlock()
                 Thread.sleep(forTimeInterval: 0.05)
                 lock.lock(); activeBaselines -= 1; lock.unlock()
                 output = "Executed \(mismatchBaseline && file.path.contains("worker-2") ? 3 : 2) tests\n"
+                if failInactiveSchemaBaseline && command.outputFile.lastPathComponent.hasPrefix("inactive-schema-worker-") { exit = 65 }
             }
         }
         return .init(exitCode: exit, timedOut: timeout, elapsed: 0.05, output: output, outputFile: command.outputFile)
@@ -170,5 +181,29 @@ struct XcodeExecutionTests {
         #expect(throws: MutationEngineError.self) { try campaign(fake) }
         #expect(fake.attempts.isEmpty)
         #expect(fake.simulators.snapshot().devices.count == 1)
+    }
+
+    @Test("a rebuilt inactive schema must pass before its mutants run")
+    func inactiveSchemaBaseline() throws {
+        let fake = FakeXcode(failInitialSchemaOnly: true, failInactiveSchemaBaseline: true)
+        do {
+            _ = try campaign(fake, workers: 1)
+            Issue.record("Expected the inactive schema baseline to fail")
+        } catch let error as MutationEngineError {
+            #expect(error.description.contains("Inactive mutation schema failed"))
+        }
+        #expect(fake.attempts.isEmpty)
+    }
+
+    @Test("a failing test without mutant activation stops the campaign")
+    func failedTestsWithoutActivation() throws {
+        let fake = FakeXcode(failWithoutActivation: true)
+        do {
+            _ = try campaign(fake, workers: 1)
+            Issue.record("Expected an integrity failure")
+        } catch let error as MutationEngineError {
+            #expect(error.description.contains("without activating mutant"))
+        }
+        #expect(fake.attempts.count == 1)
     }
 }

@@ -31,6 +31,7 @@ private final class XcodeExecutionState: @unchecked Sendable {
     }
     func isolatedBuild(_ seconds: TimeInterval) { lock.lock(); isolatedBuildSeconds += seconds; lock.unlock() }
     func error(_ error: any Error) { lock.lock(); errors.append(error); lock.unlock() }
+    var hasError: Bool { lock.lock(); defer { lock.unlock() }; return !errors.isEmpty }
     func retry(_ candidate: MutationCandidate, record: MutantRecord) { lock.lock(); retries.append(candidate); records[candidate.id] = record; lock.unlock() }
     func finish(_ record: MutantRecord, warnings: [IntegrityWarning]) { lock.lock(); records[record.id] = record; self.warnings += warnings; lock.unlock() }
     func takeRetries() -> [MutationCandidate] { lock.lock(); defer { lock.unlock() }; let result = retries; retries = []; return result }
@@ -191,6 +192,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
                 let snapshotsStarted = Date()
                 try snapshotWorkers(pool: pool, derivedData: builderData)
                 timings.sandboxCopySeconds += Date().timeIntervalSince(snapshotsStarted)
+                try validateInactiveSchema(pool: pool)
                 try executeBatch(sorted(batch), pool: pool, isolated: false)
             }
             try narrowed(sorted(schemaCandidates), afterFailure: .init(output: initialBuild.output, log: initialBuild.outputFile, timedOut: initialBuild.timedOut))
@@ -280,15 +282,35 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         for worker in pool.workers { try snapshot(worker: worker, derivedData: derivedData) }
     }
 
+    private func validateInactiveSchema(pool: XcodeSimulatorPool) throws {
+        guard let expected = state.snapshot().baselineCounts.first else {
+            throw MutationEngineError.invalidProject("Missing original-source baseline test count.")
+        }
+        for worker in pool.workers {
+            let result = try runTests(worker: worker, mutantID: nil,
+                timeout: TimeInterval(configuration.timeouts.baselineSeconds),
+                label: "inactive-schema-worker-\(worker.number)-\(UUID().uuidString)")
+            guard !result.timedOut, result.exitCode == 0 else {
+                throw MutationEngineError.invalidProject("Inactive mutation schema failed its baseline tests; no mutation score was produced. Log: \(result.outputFile.path)")
+            }
+            guard let count = TestExecutionCount.parse(result.output), count == expected else {
+                throw MutationEngineError.invalidProject("Inactive mutation schema ran a different number of tests; expected \(expected). Log: \(result.outputFile.path)")
+            }
+            state.baseline(expected)
+        }
+    }
+
     private func executeBatch(_ candidates: [MutationCandidate], pool: XcodeSimulatorPool, isolated: Bool, buildWorkspace: XcodeBuildWorkspace? = nil) throws {
         guard !candidates.isEmpty else { return }
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = pool.workers.count
         for candidate in candidates {
             queue.addOperation { [self] in
+                if state.hasError { return }
                 let worker = pool.acquire()
                 defer { pool.release(worker) }
                 do {
+                    if state.hasError { return }
                     if ProcessRunner.cancellationRequested { throw ProcessRunnerError.cancelled }
                     let outcome = try execute(candidate, worker: worker, pool: pool, isolated: isolated, retry: false, buildWorkspace: buildWorkspace)
                     if outcome.record.status == .timeout && pool.workers.count > 1 && configuration.timeouts.parallelRetry {
@@ -351,6 +373,9 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         let completedMutantFailure = activated && selectedTestsCompleted
         // A normally completed test run lets Xcode shut down its runner. Rebooting
         // after every expected mutant failure adds simulator startup cost per mutant.
+        if !activated && (result.timedOut || result.exitCode != 0) {
+            throw MutationEngineError.invalidProject("Selected tests \(result.timedOut ? "timed out" : "failed") without activating mutant \(candidate.id). The mutation run cannot produce reliable verdicts; no score was produced. Log: \(result.outputFile.path)")
+        }
         if result.stoppedEarly || result.timedOut || (result.exitCode != 0 && !completedMutantFailure) {
             try pool.sanitize(worker, hostBundleIDs: worker.artifacts?.hostBundleIDs ?? [])
         }
