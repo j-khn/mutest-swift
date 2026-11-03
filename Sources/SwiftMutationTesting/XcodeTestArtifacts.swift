@@ -37,6 +37,7 @@ struct XcodeTestArtifacts: Sendable {
     var products: URL
     var template: URL
     var hostBundleIDs: [String]
+    var canStopEarlyAfterActivatedFailure: Bool
 
     static func snapshot(derivedData: URL, into directory: URL, testTarget: String? = nil) throws -> Self {
         try snapshot(derivedData: derivedData, into: directory, testTargets: testTarget.map { [$0] } ?? [])
@@ -83,8 +84,16 @@ struct XcodeTestArtifacts: Sendable {
         let relocated = relocate(try read(manifest), from: original.path, to: products.path) as! [String: Any]
         let template = products.appendingPathComponent("mutest-template.plist")
         try write(relocated, to: template)
-        let hosts = targetDictionaries(relocated).compactMap { $0["TestHostBundleIdentifier"] as? String }
-        return Self(products: products, template: template, hostBundleIDs: Array(Set(hosts)).sorted())
+        let testTargets = targetDictionaries(relocated)
+        let hosts = testTargets.compactMap { $0["TestHostBundleIdentifier"] as? String }.filter { !$0.isEmpty }
+        // Early termination can leave the host app running. Only do it when we can
+        // identify every host so the worker can be cleaned without rebooting it.
+        let canStopEarly = !testTargets.isEmpty && testTargets.allSatisfy {
+            guard let host = $0["TestHostBundleIdentifier"] as? String else { return false }
+            return !host.isEmpty
+        }
+        return Self(products: products, template: template, hostBundleIDs: Array(Set(hosts)).sorted(),
+                    canStopEarlyAfterActivatedFailure: canStopEarly)
     }
 
     static func removeGeneratedManifests(derivedData: URL) throws {

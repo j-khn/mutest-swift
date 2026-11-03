@@ -133,6 +133,9 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         mutationLog("Test products built. Starting simulator workers one at a time…")
         let simulatorSetupSeconds = try pool.waitUntilReady()
         timings.baselineSeconds += try prepareAndValidateWorkers(pool: pool, derivedData: builderData)
+        if pool.workers.contains(where: { $0.artifacts?.canStopEarlyAfterActivatedFailure != true }) {
+            mutationLog("Xcode test products do not provide host app IDs for every test target; mutant failures will finish the selected tests before the simulator is reused.")
+        }
         let mutationStartedAt = Date()
         let ordered = candidates.sorted {
             let left = historicalDurations[$0.id] ?? 0, right = historicalDurations[$1.id] ?? 0
@@ -344,7 +347,11 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         } else if !activated && result.exitCode != 0 && !result.timedOut {
             warnings.append(.init(code: "testsFailedWithoutActivation", message: "Xcode test execution failed without activating the mutant; verdict is noCoverage.", mutantId: candidate.id))
         }
-        if result.stoppedEarly || result.timedOut || result.exitCode != 0 {
+        let selectedTestsCompleted = !result.stoppedEarly && !result.timedOut && (TestExecutionCount.parse(result.output) ?? 0) > 0
+        let completedMutantFailure = activated && selectedTestsCompleted
+        // A normally completed test run lets Xcode shut down its runner. Rebooting
+        // after every expected mutant failure adds simulator startup cost per mutant.
+        if result.stoppedEarly || result.timedOut || (result.exitCode != 0 && !completedMutantFailure) {
             try pool.sanitize(worker, hostBundleIDs: worker.artifacts?.hostBundleIDs ?? [])
         }
         return (record, warnings)
@@ -362,7 +369,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         defer { if let bundle { try? FileManager.default.removeItem(at: bundle) } }
         let command = try adapter.command(root: worker.isolatedRoot ?? sandbox, phase: .testWithoutBuilding,
             resolved: selection, environment: [:], timeout: timeout, output: log(label),
-            stopOnActivatedTestFailure: mutantID != nil, activationID: mutantID,
+            stopOnActivatedTestFailure: mutantID != nil && artifacts.canStopEarlyAfterActivatedFailure, activationID: mutantID,
             xcodeContext: .init(destination: worker.destination, derivedDataPath: worker.directory.appendingPathComponent("DerivedData"), testRunFile: manifest, resultBundlePath: bundle))
         let result = try commandRunner(command)
         if let mutantID, let bundle {
