@@ -1,0 +1,30 @@
+name: mutest-test
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  mutest-test:
+    name: Build and test
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Show selected Xcode and Swift toolchains
+        run: |
+          xcode-select -p
+          xcodebuild -version
+          swift --version
+
+      - name: Build CLI
+        run: swift build --product swift-mutation-testing
+
+      - name: Run tests
+        run: swift test
