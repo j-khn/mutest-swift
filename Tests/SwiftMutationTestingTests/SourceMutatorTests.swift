@@ -81,6 +81,8 @@ struct SourceMutatorTests {
         #expect(schema.source.contains("public enum MutestRuntime"))
         #expect(schema.source.contains("handle.write(line)"))
         #expect(!schema.source.contains("write(contentsOf:"))
+        #expect(schema.source.contains("handle.closeFile()"))
+        #expect(schema.source.contains("handle.seekToEndOfFile()"))
     }
 
     @Test("inactive schema keeps the original result and records an active mutant once")

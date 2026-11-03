@@ -174,8 +174,8 @@ public struct SwiftMutationGenerator: Sendable {
                 if let path = activationFile {
                     if !FileManager.default.fileExists(atPath: path) { FileManager.default.createFile(atPath: path, contents: nil) }
                     if let handle = FileHandle(forWritingAtPath: path) {
-                        defer { try? handle.close() }
-                        try? handle.seekToEnd()
+                        defer { handle.closeFile() }
+                        _ = handle.seekToEndOfFile()
                         handle.write(line)
                     }
                 }
