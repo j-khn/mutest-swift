@@ -34,10 +34,17 @@ public enum MutationEngineError: Error, CustomStringConvertible {
         switch self {
         case .invalidProject(let message), .noSourceFiles(let message), .invalidSelection(let message): return message
         case .baselineFailed(let log, let timedOut): return "Baseline tests \(timedOut ? "timed out" : "failed"); no mutation score was produced. Log: \(log.path)"
-        case .baselineBuildFailed(let log, let timedOut): return "Xcode test build \(timedOut ? "timed out" : "failed"); tests did not start and no mutation score was produced. Log: \(log.path)"
+        case .baselineBuildFailed(let log, let timedOut):
+            return "Xcode test build \(timedOut ? "timed out" : "failed"); tests did not start and no mutation score was produced. Log: \(log.path)\(Self.logTail(log))"
         case .baselineRanNoTests(let log): return "Baseline command succeeded but ran zero tests; no mutation score was produced. Check test selectors and log: \(log.path)"
         case .dependencyResolutionFailed(let log, let timedOut): return "Package dependency resolution \(timedOut ? "timed out" : "failed"); no mutation score was produced. Log: \(log.path)"
         }
+    }
+
+    private static func logTail(_ url: URL) -> String {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
+        let lines = text.split(whereSeparator: \.isNewline).suffix(40).map(String.init)
+        return lines.isEmpty ? "" : "\nLast build log lines:\n" + lines.joined(separator: "\n")
     }
 }
 

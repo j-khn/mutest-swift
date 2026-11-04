@@ -313,24 +313,22 @@ runs:
         else
           echo "run-status=skipped" >> "$GITHUB_OUTPUT"
         fi
-    - name: Show simulator boot logs after failure
+    - name: Show Xcode build and simulator logs after failure
       if: failure()
       shell: bash
       env:
         REPORT_DIRECTORY: ${{ steps.arguments.outputs.report-directory }}
       run: |
         set -euo pipefail
-        logs="$REPORT_DIRECTORY/logs/simulators"
-        [[ -d "$logs" ]] || exit 0
         found=false
-        for log in "$logs"/boot-*.log "$logs"/bootstatus-*.log; do
+        for log in "$REPORT_DIRECTORY"/logs/*build*.log "$REPORT_DIRECTORY"/logs/simulators/boot-*.log "$REPORT_DIRECTORY"/logs/simulators/bootstatus-*.log; do
           [[ -f "$log" ]] || continue
           found=true
-          echo "::group::Simulator startup log: $(basename "$log")"
-          tail -n 80 "$log"
+          echo "::group::Failure log: $(basename "$log")"
+          tail -n 100 "$log"
           echo "::endgroup::"
         done
-        if [[ "$found" == false ]]; then echo "No simulator startup logs were produced."; fi
+        if [[ "$found" == false ]]; then echo "No Xcode build or simulator logs were produced."; fi
     - name: Add Markdown report to the job summary
       if: always()
       shell: bash
