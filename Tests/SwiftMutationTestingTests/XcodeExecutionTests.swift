@@ -124,7 +124,7 @@ struct XcodeExecutionTests {
         #expect(parallelFake.maximumActiveBaselines == 2)
         #expect(parallel.mutantTestRunCount == parallel.records.count)
         #expect(parallelFake.simulators.snapshot().devices.count == 1)
-        #expect(!parallelFake.initialBuildSawBoot)
+        #expect(parallelFake.initialBuildSawBoot)
         for command in parallelFake.builds {
             let index = try #require(command.arguments.firstIndex(of: "-derivedDataPath"))
             let buildPath = command.arguments[index + 1]
@@ -151,7 +151,7 @@ struct XcodeExecutionTests {
         #expect(result.baselineCounts.count == 2)
         #expect(result.baselineCounts == [2, 2])
         #expect(result.timings.isolatedBuildSeconds > 0)
-        #expect(!fake.initialBuildSawBoot)
+        #expect(fake.initialBuildSawBoot)
         #expect(fake.maximumActiveBuilds == 1)
         let isolated = fake.builds.filter { $0.outputFile.lastPathComponent.hasPrefix("isolated-build-") }
         #expect(!isolated.isEmpty)
@@ -162,7 +162,7 @@ struct XcodeExecutionTests {
         }
     }
 
-    @Test("failed original builds abort without booting simulators and remove build files")
+    @Test("failed original builds abort and clean simulators booted during the build")
     func failedBuildDoesNotBoot() throws {
         let fake = FakeXcode(failOriginalBuild: true)
         do {
@@ -173,7 +173,7 @@ struct XcodeExecutionTests {
             #expect(error.description.contains("tests did not start"))
         }
         #expect(fake.attempts.isEmpty)
-        #expect(!fake.simulators.snapshot().commands.contains { $0.first == "boot" })
+        #expect(fake.simulators.snapshot().commands.contains { $0.first == "boot" })
         #expect(fake.simulators.snapshot().devices.count == 1)
         #expect(fake.builds.count == 1)
         for command in fake.builds {

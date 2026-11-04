@@ -107,6 +107,29 @@ final class XcodeSimulatorWorker: @unchecked Sendable {
     var destination: String { "platform=iOS Simulator,id=\(simulatorID)" }
 }
 
+private final class SimulatorCreationState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ids: [String?]
+    private var errors: [any Error] = []
+
+    init(count: Int) { ids = Array(repeating: nil, count: count) }
+
+    func record(id: String, at index: Int) {
+        lock.lock(); defer { lock.unlock() }
+        ids[index] = id
+    }
+
+    func record(error: any Error) {
+        lock.lock(); defer { lock.unlock() }
+        errors.append(error)
+    }
+
+    func snapshot() -> (ids: [String?], errors: [any Error]) {
+        lock.lock(); defer { lock.unlock() }
+        return (ids, errors)
+    }
+}
+
 /// Owns only devices listed in its locked manifest. Different campaigns and the user's
 /// original simulator are never shut down, erased, or deleted by this pool.
 final class XcodeSimulatorPool: @unchecked Sendable {
@@ -155,18 +178,44 @@ final class XcodeSimulatorPool: @unchecked Sendable {
         var workers: [XcodeSimulatorWorker] = []
         let startedAt = Date()
         do {
-            for number in 1...max(1, count) {
-                let name = "mutest-\(runID)-worker-\(number)"
-                ownership.devices.append(.init(name: name))
-                try Self.persist(ownership, in: directory)
+            let workerCount = max(1, count)
+            let names = (1...workerCount).map { "mutest-\(runID)-worker-\($0)" }
+            ownership.devices = names.map { OwnedDevice(name: $0) }
+            // Persist every owned name before starting parallel creation. If the
+            // process is interrupted, recovery can still find a device created just
+            // before its identifier was returned.
+            try Self.persist(ownership, in: directory)
+
+            let state = SimulatorCreationState(count: workerCount)
+            let creationQueue = OperationQueue()
+            creationQueue.maxConcurrentOperationCount = workerCount
+            for index in 0..<workerCount {
+                let name = names[index]
                 let arguments = template.cloneSourceID.map { ["clone", $0, name] } ?? ["create", name, template.deviceType, template.runtime]
-                let result = try Self.execute(arguments, logs: logs, timeout: 60, run: run)
-                let id = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard result.exitCode == 0, !result.timedOut, UUID(uuidString: id) != nil else {
-                    throw MutationEngineError.invalidProject("Could not create Xcode worker \(number). See \(result.outputFile.path)")
+                creationQueue.addOperation {
+                    do {
+                        let result = try Self.execute(arguments, logs: logs, timeout: 60, run: run)
+                        let id = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard result.exitCode == 0, !result.timedOut, UUID(uuidString: id) != nil else {
+                            throw MutationEngineError.invalidProject("Could not create Xcode worker \(index + 1). See \(result.outputFile.path)")
+                        }
+                        state.record(id: id, at: index)
+                    } catch {
+                        state.record(error: error)
+                    }
                 }
-                ownership.devices[number - 1].id = id
-                try Self.persist(ownership, in: directory)
+            }
+            creationQueue.waitUntilAllOperationsAreFinished()
+            let created = state.snapshot()
+            for index in created.ids.indices {
+                if let id = created.ids[index] { ownership.devices[index].id = id }
+            }
+            try Self.persist(ownership, in: directory)
+            if let error = created.errors.first { throw error }
+
+            for (index, id) in created.ids.enumerated() {
+                guard let id else { throw MutationEngineError.invalidProject("Could not create Xcode worker \(index + 1).") }
+                let number = index + 1
                 workers.append(.init(number: number, simulatorID: id, directory: artifactDirectory.appendingPathComponent("worker-\(number)")))
             }
         } catch {
@@ -178,9 +227,10 @@ final class XcodeSimulatorPool: @unchecked Sendable {
         self.artifactDirectory = artifactDirectory
         self.ownership = ownership; self.workers = workers; self.available = workers
         self.lockFD = fd; self.creationSeconds = Date().timeIntervalSince(startedAt); self.bootTimeout = bootTimeout
-        // Booting several new devices simultaneously can saturate the host with
-        // simulator system services. Tests still run concurrently after startup.
-        bootQueue.maxConcurrentOperationCount = 1
+        // Boot each worker alongside the others, matching the execution
+        // concurrency. This overlaps simulator readiness with builds and avoids
+        // serial startup becoming a fixed cost before mutation tests can begin.
+        bootQueue.maxConcurrentOperationCount = workers.count
         if !deferBoot { startBooting() }
     }
 

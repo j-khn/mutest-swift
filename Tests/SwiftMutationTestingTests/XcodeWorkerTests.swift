@@ -6,13 +6,38 @@ final class FakeSimulators: @unchecked Sendable {
     private let lock = NSLock()
     private var devices: [String: String] = ["user-simulator": "My Simulator"]
     private var commands: [[String]] = []
+    private var activeBoots = 0
+    private(set) var maximumActiveBoots = 0
+    private var activeCreations = 0
+    private(set) var maximumActiveCreations = 0
     var failBoot = false
     private var launchctlOutput = ""
     func setLaunchctlOutput(_ output: String) { lock.lock(); launchctlOutput = output; lock.unlock() }
     func run(_ command: CommandSpec) throws -> CommandResult {
-        lock.lock(); defer { lock.unlock() }
         let args = Array(command.arguments.dropFirst())
+        lock.lock()
         commands.append(args)
+        let isBoot = args.first == "boot"
+        let isCreation = ["clone", "create"].contains(args.first ?? "")
+        if isBoot {
+            activeBoots += 1
+            maximumActiveBoots = max(maximumActiveBoots, activeBoots)
+        }
+        if isCreation {
+            activeCreations += 1
+            maximumActiveCreations = max(maximumActiveCreations, activeCreations)
+        }
+        lock.unlock()
+        // Model simctl boot taking time so a test can prove the pool overlaps
+        // worker startup rather than merely launching both commands quickly.
+        if isBoot || isCreation {
+            Thread.sleep(forTimeInterval: 0.03)
+            lock.lock()
+            if isBoot { activeBoots -= 1 }
+            if isCreation { activeCreations -= 1 }
+            lock.unlock()
+        }
+        lock.lock(); defer { lock.unlock() }
         var output = "", code: Int32 = 0
         switch args.first {
         case "create":
@@ -123,7 +148,7 @@ struct XcodeWorkerTests {
         #expect(!snapshot.commands.contains { ["delete", "shutdown", "terminate"].contains($0.first ?? "") && $0.dropFirst().contains("user-simulator") })
     }
 
-    @Test("deferred simulator startup boots each worker completely before the next")
+    @Test("deferred simulator startup boots workers concurrently and waits for readiness")
     func deferredStartup() throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let fake = FakeSimulators()
@@ -131,11 +156,13 @@ struct XcodeWorkerTests {
         #expect(!fake.snapshot().commands.contains { $0.first == "boot" })
         _ = try pool.waitUntilReady()
         let bootCommands = fake.snapshot().commands.filter { ["boot", "bootstatus"].contains($0.first ?? "") }
-        #expect(bootCommands.map { $0[0] } == ["boot", "bootstatus", "boot", "bootstatus"])
         try #require(bootCommands.count == 4)
-        #expect(bootCommands[0][1] == bootCommands[1][1])
-        #expect(bootCommands[2][1] == bootCommands[3][1])
-        #expect(bootCommands[0][1] != bootCommands[2][1])
+        #expect(bootCommands.filter { $0[0] == "boot" }.count == 2)
+        #expect(bootCommands.filter { $0[0] == "bootstatus" }.count == 2)
+        #expect(fake.maximumActiveBoots == 2)
+        let bootedIDs = Set(bootCommands.filter { $0[0] == "boot" }.map { $0[1] })
+        let readinessIDs = Set(bootCommands.filter { $0[0] == "bootstatus" }.map { $0[1] })
+        #expect(bootedIDs == readinessIDs)
         _ = try pool.waitUntilReady()
         #expect(fake.snapshot().commands.filter { $0.first == "boot" }.count == 2)
         #expect(pool.cleanup().isEmpty)
@@ -204,6 +231,7 @@ struct XcodeWorkerTests {
         configured.cloneSourceID = "user-simulator"
         let pool = try XcodeSimulatorPool(template: configured, count: 2, output: root, run: fake.run, teardownRun: fake.run)
         _ = try pool.waitUntilReady()
+        #expect(fake.maximumActiveCreations == 2)
         #expect(pool.cleanup().isEmpty)
         let result = fake.snapshot()
         #expect(result.devices == ["user-simulator": "My Simulator"])

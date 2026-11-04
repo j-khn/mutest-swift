@@ -109,7 +109,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         let workspace = try buildWorkspace ?? XcodeBuildWorkspace()
         defer { if buildWorkspace == nil { workspace.cleanup() } }
         let pool = try XcodeSimulatorPool(template: template, count: workerCount, output: output,
-            registryDirectory: workerRegistryDirectory ?? XcodeSimulatorPool.persistentRegistryDirectory(), deferBoot: true, run: commandRunner, teardownRun: cleanupRunner)
+            registryDirectory: workerRegistryDirectory ?? XcodeSimulatorPool.persistentRegistryDirectory(), deferBoot: false, run: commandRunner, teardownRun: cleanupRunner)
         var cleaned = false
         // Xcode may finish writing result attachments after an attempt returns.
         // Sweep this campaign's bundles again after worker teardown to catch late files.
@@ -123,7 +123,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         defer { if !cleaned { for warning in pool.cleanup() { mutationLog(warning.message) } } }
         var timings = MutationTimings()
         let builderData = workspace.derivedData
-        mutationLog("Building test products before simulator startup; Xcode builds use at most 2 jobs. Build files are outside the source tree.")
+        mutationLog("Building original test products while simulator workers start; Xcode builds use at most 2 jobs. Build files are outside the source tree.")
         // Always establish a baseline from the caller's original sources. An inactive
         // schema can compile yet change timing or behavior, so it is not a valid baseline.
         let original = try build(root: sandbox, derivedData: builderData, worker: pool.workers[0], label: "baseline-build")
@@ -131,7 +131,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         guard !original.timedOut, original.exitCode == 0 else {
             throw MutationEngineError.baselineBuildFailed(log: original.outputFile, timedOut: original.timedOut)
         }
-        mutationLog("Original test products built. Starting simulator workers one at a time…")
+        mutationLog("Original test products built. Waiting for simulator workers…")
         let simulatorSetupSeconds = try pool.waitUntilReady()
         timings.baselineSeconds += try prepareAndValidateWorkers(pool: pool, derivedData: builderData)
         if pool.workers.contains(where: { $0.artifacts?.canStopEarlyAfterActivatedFailure != true }) {
