@@ -154,7 +154,7 @@ final class XcodeSimulatorPool: @unchecked Sendable {
     private var closed = false
     private let bootTimeout: TimeInterval
 
-    init(template: XcodeSimulatorTemplate, count: Int, output: URL, registryDirectory: URL? = nil, bootTimeout: TimeInterval = 120, deferBoot: Bool = false,
+    init(template: XcodeSimulatorTemplate, count: Int, output: URL, registryDirectory: URL? = nil, bootTimeout: TimeInterval = 300, deferBoot: Bool = false,
          run: @escaping XcodeCommandRunner = { try ProcessRunner().run($0) },
          teardownRun: @escaping XcodeCommandRunner = { try ProcessRunner(ignoresCancellation: true).run($0) }) throws {
         let manager = FileManager.default
@@ -314,11 +314,35 @@ final class XcodeSimulatorPool: @unchecked Sendable {
     }
 
     private func boot(_ worker: XcodeSimulatorWorker) throws {
-        let start = Date()
-        let boot = try Self.execute(["boot", worker.simulatorID], logs: logs, timeout: bootTimeout, run: run)
-        guard !boot.timedOut, boot.exitCode == 0 else { throw MutationEngineError.invalidProject("Worker \(worker.number) could not boot: \(boot.outputFile.path)") }
-        let ready = try Self.execute(["bootstatus", worker.simulatorID, "-b"], logs: logs, timeout: max(0.1, bootTimeout - Date().timeIntervalSince(start)), run: run)
-        guard !ready.timedOut, ready.exitCode == 0 else { throw MutationEngineError.invalidProject("Worker \(worker.number) was not ready within \(Int(bootTimeout)) seconds: \(ready.outputFile.path)") }
+        mutationLog("Starting Xcode worker \(worker.number) simulator boot: \(worker.simulatorID).")
+        let boot = try Self.execute(["boot", worker.simulatorID], logs: logs, timeout: min(60, bootTimeout), run: run)
+        guard !boot.timedOut, boot.exitCode == 0 else {
+            throw MutationEngineError.invalidProject("Worker \(worker.number) could not start booting (timed out: \(boot.timedOut)). Simulator log: \(boot.outputFile.path)\(Self.logExcerpt(boot.output))")
+        }
+        mutationLog("Waiting up to \(Int(bootTimeout))s for Xcode worker \(worker.number) to finish booting.")
+        let ready = try Self.execute(["bootstatus", worker.simulatorID, "-b"], logs: logs, timeout: bootTimeout, run: run)
+        guard !ready.timedOut, ready.exitCode == 0 else {
+            let state = Self.deviceState(worker.simulatorID, logs: logs, run: teardownRun)
+            let outcome = ready.timedOut ? "timed out" : "exited with code \(ready.exitCode)"
+            throw MutationEngineError.invalidProject("Worker \(worker.number) did not become ready: simctl bootstatus \(outcome) after \(Int(ready.elapsed))s; simulator state: \(state). Log: \(ready.outputFile.path)\(Self.logExcerpt(ready.output))")
+        }
+    }
+
+    private static func logExcerpt(_ output: String) -> String {
+        let lines = output.split(whereSeparator: \.isNewline).suffix(12).map(String.init)
+        return lines.isEmpty ? "" : "\n" + lines.joined(separator: "\n")
+    }
+
+    private static func deviceState(_ id: String, logs: URL, run: XcodeCommandRunner) -> String {
+        guard let listing = try? execute(["list", "devices", "-j"], logs: logs, timeout: 15, run: run),
+              listing.exitCode == 0, !listing.timedOut,
+              let data = listing.output.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let devices = root["devices"] as? [String: [[String: Any]]],
+              let device = devices.values.flatMap({ $0 }).first(where: { ($0["udid"] as? String) == id }) else {
+            return "unknown"
+        }
+        return device["state"] as? String ?? "unknown"
     }
 
     private static func execute(_ arguments: [String], logs: URL, timeout: TimeInterval, run: XcodeCommandRunner) throws -> CommandResult {
