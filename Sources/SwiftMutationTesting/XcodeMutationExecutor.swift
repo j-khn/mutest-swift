@@ -430,15 +430,47 @@ final class XcodeMutationExecutor: @unchecked Sendable {
             try snapshot(worker: worker, derivedData: derivedData)
         }
         let timeout = TimeInterval(configuration.timeouts.mutantSeconds) * (retry ? configuration.timeouts.retryMultiplier : 1)
-        let result = try runTests(worker: worker, mutantID: candidate.id, source: candidate.source, timeout: timeout,
-                                 label: "\(retry ? "retry-isolated" : "mutant")-\(candidate.id)")
-        let activated = result.output.contains("SWIFT_MUTATION_ACTIVATED:\(candidate.id)")
+        var result = try runTests(worker: worker, mutantID: candidate.id, source: candidate.source, timeout: timeout,
+                                  label: "\(retry ? "retry-isolated" : "mutant")-\(candidate.id)")
+        var activated = result.output.contains("SWIFT_MUTATION_ACTIVATED:\(candidate.id)")
+        var firstUnactivatedFailureLog: URL?
+        var firstUnactivatedFailureSummary: String?
+        let parallelTimeoutWillRetry = !retry && result.timedOut && pool.workers.count > 1 && configuration.timeouts.parallelRetry
+        if !retry, !activated, (result.timedOut || result.exitCode != 0), !parallelTimeoutWillRetry {
+            // A flaky test outside the mutated code must not be mistaken for a kill,
+            // and a timed-out test host can leave the simulator in a bad state. Retry
+            // once on a clean simulator before aborting without a reliable verdict.
+            firstUnactivatedFailureLog = result.outputFile
+            firstUnactivatedFailureSummary = firstFailureSummary(in: result.output)
+            let lastTest = lastStartedTest(in: result.output).map { " Last test started: \($0)." } ?? ""
+            let detail = firstUnactivatedFailureSummary.map { " Failure: \($0)." } ?? ""
+            let retryTimeout = result.timedOut ? timeout * configuration.timeouts.retryMultiplier : timeout
+            let retryReason = result.timedOut
+                ? "Tests timed out before mutant \(candidate.id) activated. Restarting its simulator and retrying once with \(Int(retryTimeout))s."
+                : "Tests failed before mutant \(candidate.id) activated. Restarting its simulator and retrying once."
+            mutationLog("\(retryReason)\(lastTest)\(detail) Log: \(result.outputFile.path)")
+            if result.timedOut {
+                try pool.reset(worker)
+            } else {
+                try pool.sanitize(worker, hostBundleIDs: worker.artifacts?.hostBundleIDs ?? [])
+            }
+            let retryResult = try runTests(worker: worker, mutantID: candidate.id, source: candidate.source,
+                timeout: retryTimeout, label: "retry-unactivated-\(candidate.id)")
+            result = .init(exitCode: retryResult.exitCode, timedOut: retryResult.timedOut,
+                elapsed: result.elapsed + retryResult.elapsed, output: retryResult.output,
+                outputFile: retryResult.outputFile, stoppedEarly: retryResult.stoppedEarly)
+            activated = retryResult.output.contains("SWIFT_MUTATION_ACTIVATED:\(candidate.id)")
+        }
         var record = candidate.record
         record.durationSeconds = buildSeconds + result.elapsed; record.activated = activated
         if result.timedOut { record.status = .timeout }
         else if !activated { record.status = .noCoverage }
         else { record.status = result.exitCode == 0 ? .survived : .killed }
         if result.stoppedEarly { record.message = "Stopped after a selected test failed while this mutant was active." }
+        else if let firstUnactivatedFailureLog {
+            let detail = firstUnactivatedFailureSummary.map { " First failure: \($0)." } ?? ""
+            record.message = "The first test run did not complete cleanly before mutant activation; the simulator was restarted and the retry completed.\(detail) First log: \(firstUnactivatedFailureLog.path)."
+        }
         var warnings: [IntegrityWarning] = []
         if TestExecutionCount.parse(result.output) == 0 && !result.stoppedEarly && !activated {
             warnings.append(.init(code: "testsNotExecuted", message: "The selected test command reported zero tests.", mutantId: candidate.id))
@@ -449,8 +481,20 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         let completedMutantFailure = activated && selectedTestsCompleted
         // A normally completed test run lets Xcode shut down its runner. Rebooting
         // after every expected mutant failure adds simulator startup cost per mutant.
+        if let firstUnactivatedFailureLog, result.timedOut || result.exitCode != 0 {
+            let firstDetail = firstUnactivatedFailureSummary.map { " First failure: \($0)." } ?? ""
+            let retryDetail = firstFailureSummary(in: result.output).map { " Retry failure: \($0)." } ?? ""
+            let firstLastTest = lastStartedTest(in: (try? String(contentsOf: firstUnactivatedFailureLog, encoding: .utf8)) ?? "")
+                .map { " First attempt last test started: \($0)." } ?? ""
+            let retryLastTest = lastStartedTest(in: result.output)
+                .map { " Retry last test started: \($0)." } ?? ""
+            throw MutationEngineError.invalidProject("Selected tests failed again after an unactivated attempt for mutant \(candidate.id). The failure cannot be safely attributed to the mutation; no score was produced.\(firstLastTest)\(retryLastTest)\(firstDetail)\(retryDetail) Retry log: \(result.outputFile.path). First log: \(firstUnactivatedFailureLog.path).")
+        }
         if !activated && (result.timedOut || result.exitCode != 0) {
-            throw MutationEngineError.invalidProject("Selected tests \(result.timedOut ? "timed out" : "failed") without activating mutant \(candidate.id). The mutation run cannot produce reliable verdicts; no score was produced. Log: \(result.outputFile.path)")
+            let retryContext = firstUnactivatedFailureLog.map { " The first attempt also failed; log: \($0.path)." } ?? ""
+            let lastTest = lastStartedTest(in: result.output).map { " Last test started: \($0)." } ?? ""
+            let retryState = firstUnactivatedFailureLog == nil && !retry ? "" : " after retry"
+            throw MutationEngineError.invalidProject("Selected tests \(result.timedOut ? "timed out" : "failed") without activating mutant \(candidate.id)\(retryState). The mutation run cannot produce reliable verdicts; no score was produced.\(lastTest) Log: \(result.outputFile.path).\(retryContext)")
         }
         if result.stoppedEarly || result.timedOut || (result.exitCode != 0 && !completedMutantFailure) {
             try pool.sanitize(worker, hostBundleIDs: worker.artifacts?.hostBundleIDs ?? [])
@@ -479,6 +523,28 @@ final class XcodeMutationExecutor: @unchecked Sendable {
                                 reportedCaseCount: TestExecutionCount.parse(result.output), testCases: testCases))
         }
         return result
+    }
+
+    private func firstFailureSummary(in output: String) -> String? {
+        let lines = output.split(whereSeparator: \.isNewline).map(String.init)
+        if let line = lines.first(where: { $0.contains("recorded an issue at") }) {
+            return String(line.trimmingCharacters(in: .whitespacesAndNewlines).prefix(320))
+        }
+        if let index = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("Failing tests:") }) {
+            for line in lines.dropFirst(index + 1) {
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return String(trimmed.prefix(320)) }
+            }
+        }
+        return lines.first(where: { $0.contains(" error:") || $0.hasPrefix("error:") })
+            .map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(320)) }
+    }
+
+    private func lastStartedTest(in output: String) -> String? {
+        output.split(whereSeparator: \.isNewline).reversed().map(String.init).first { line in
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (trimmed.contains("Test Case '") || trimmed.contains("◇ Test ")) && trimmed.hasSuffix("started.")
+        }?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func finish(_ candidate: MutationCandidate, record: MutantRecord, warnings: [IntegrityWarning]) throws {

@@ -362,7 +362,8 @@ struct XcodeWorkerTests {
         let diagnostics = try #require(command.arguments.firstIndex(of: "-collect-test-diagnostics"))
         #expect(command.arguments[diagnostics + 1] == "never")
         let baseline = try adapter.command(root: root, phase: .testWithoutBuilding, resolved: .init(identifiers: [], allTests: true), environment: [:], timeout: 30, output: root.appendingPathComponent("baseline.log"), xcodeContext: context)
-        #expect(!baseline.arguments.contains("-collect-test-diagnostics"))
+        let baselineDiagnostics = try #require(baseline.arguments.firstIndex(of: "-collect-test-diagnostics"))
+        #expect(baseline.arguments[baselineDiagnostics + 1] == "never")
     }
 
     @Test("baseline counts add both frameworks without adding nested XCTest totals twice")

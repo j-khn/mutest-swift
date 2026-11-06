@@ -408,8 +408,8 @@ public struct NativeTestAdapter: Sendable {
             if let destination { args += ["-destination", destination] }
             args += ["-derivedDataPath", (xcodeContext?.derivedDataPath ?? xcodeDerivedDataPath ?? root.appendingPathComponent(".swift-mutation-testing/DerivedData")).path]
             args += ["-parallel-testing-enabled", "NO"]
-            if stopOnActivatedTestFailure {
-                // Expected mutant failures do not need a full simulator sysdiagnose.
+            if phase == .baseline || phase == .testWithoutBuilding {
+                // Disable Xcode's extra failure-diagnostics collection for all test runs.
                 args += ["-collect-test-diagnostics", "never"]
             }
             if let bundle = xcodeContext?.resultBundlePath { args += ["-resultBundlePath", bundle.path] }
