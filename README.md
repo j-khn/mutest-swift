@@ -114,7 +114,7 @@ The last command runs all tests in A and B, every test in `CTests.swift`, all te
 
 GitHub reads workflow files from `.github/workflows/`, so create your workflow there. This complete example runs on pushes and pull requests to `main`, and nightly every day. Pushes and pull requests use the event's base commit. Nightly runs select commits from the previous 24 hours; the first nightly uses that same window. Change `main` and the Xcode settings to match your project.
 
-<small><em>Note: `mutest-swift` is private for now. You need permission to clone it and to let your repository use its GitHub Action. Grant Action access in `mutest-swift` → Settings → Actions → General → Access. <a href="https://docs.github.com/en/actions/how-tos/reuse-automations/share-across-private-repositories">GitHub explains this setting</a>.</em></small>
+<small><em>If you keep this action in a private repository, allow the consuming repository under Settings → Actions → General → Access. <a href="https://docs.github.com/en/actions/how-tos/reuse-automations/share-across-private-repositories">GitHub explains this setting</a>.</em></small>
 
 Create `.github/workflows/mutation.yml`:
 
@@ -256,4 +256,8 @@ Mutation types include changing comparisons, Boolean values, logical and arithme
 
 ## License
 
-No license is provided at this time.
+Licensed under the [MIT License](LICENSE).
+
+## Privacy information
+
+`mutest-swift` has no telemetry and does not upload your source code, tests, or reports to its maintainers. Temporary project copies, build data, logs, reports, and cache files are written to the machine where it runs. SwiftPM and Xcode may access the network to resolve project dependencies, and the build scripts or tests you run may make their own network requests. When used in GitHub Actions, GitHub retains workflow logs according to your repository's Actions settings.

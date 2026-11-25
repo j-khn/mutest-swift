@@ -230,15 +230,15 @@ struct XcodeExecutionTests {
         #expect(fake.simulators.snapshot().devices.count == 1)
     }
 
-    @Test("a failing test without mutant activation stops the campaign")
-    func failedTestsWithoutActivation() throws {
+    @Test("an unactivated test failure is retried once before stopping")
+    func unactivatedFailureRetriesOnceThenStops() throws {
         let fake = FakeXcode(failWithoutActivation: true)
         do {
             _ = try campaign(fake, workers: 1)
             Issue.record("Expected an integrity failure")
         } catch let error as MutationEngineError {
-            #expect(error.description.contains("without activating mutant"))
+            #expect(error.description.contains("failed again after an unactivated attempt"))
         }
-        #expect(fake.attempts.count == 1)
+        #expect(fake.attempts.count == 2)
     }
 }
