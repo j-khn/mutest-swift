@@ -36,7 +36,7 @@ Mutation testing is not a way to write code. You do not write special code for i
 
 ### 1. Run locally
 
-Requirements: macOS 14 or newer, Swift 6.0 or newer, and Python 3. Install Xcode to test Xcode projects or iOS apps.
+Requirements: macOS 14 or newer, Swift 6.0 or newer, and Python 3. Install Xcode to test Xcode projects or iOS apps. Swift packages can also run through the CLI or GitHub Action on Linux with a compatible Swift toolchain; CentOS Stream 9 is covered by the integration workflow below. The interactive `./run` launcher is for Xcode and iOS simulator projects.
 
 ```sh
 mkdir -p ~/Tools
@@ -191,6 +191,39 @@ jobs:
 Replace `MyApp` and the simulator name with values from your project and runner. For a Swift package, use `project: .` and `project-kind: swift-package`; omit `scheme` and `destination-simulator`. The `uses:` line calls the reusable action in this repository. It builds or reuses the CLI, runs the selected scope, adds the Markdown report to the workflow summary, and uploads the reports. You can replace it with direct CLI commands, but then your workflow must do those steps itself.
 
 The runner needs Xcode and the selected iOS Simulator runtime installed. Change `[self-hosted, macos]` if your runner uses different labels.
+
+#### Pull requests on a CentOS runner
+
+For a Swift package that builds and tests on Linux, the action can compare the pull request's merge commit with its base commit. This selects changed production Swift files and runs tests in both changed test files and filename-matched test files such as `FooTests.swift` for `Foo.swift`.
+
+```yaml
+name: Mutation tests
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  mutation-testing:
+    # Replace these with the labels of your CentOS runner.
+    runs-on: [self-hosted, Linux, X64, centos]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: swift --version
+      - uses: j-khn/mutest-swift/.github/actions/run-mutation-testing@main
+        with:
+          project: .
+          project-kind: swift-package
+          source-commit: ${{ github.sha }}
+          source-base: ${{ github.event.pull_request.base.sha }}
+          source-scope: changed
+          test-scope: changed-and-matching
+          workers: '2'
+```
+
+Install Swift, Git, Bash, and the native libraries required by your package on the runner. The GitHub Action builds mutest-swift from source using the Swift toolchain on `PATH`; use a released version tag in place of `main` to pin it. For a package in a subdirectory, set `project` to that package directory. The tested revision must be the checked-out revision, and both commits must be present locally.
+
+If no production Swift files changed, mutation testing is skipped, including on test-only PRs. If production files changed but no changed or filename-matched tests are found, the action fails rather than silently testing nothing. Use `test-scope: all` for the full test plan or set `test-file-suffix` for your naming convention. Scoping tests to changed or matching files can miss failures in other tests. Xcode projects and iOS simulator tests still require a macOS runner with Xcode.
 
 <details>
 <summary>GitHub Action inputs</summary>

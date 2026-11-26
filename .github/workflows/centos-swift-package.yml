@@ -1,0 +1,111 @@
+name: CentOS Swift package integration
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  centos:
+    runs-on: ubuntu-latest
+    container: quay.io/centos/centos:stream9
+    timeout-minutes: 45
+    steps:
+      - name: Install build prerequisites
+        run: >-
+          dnf -y install git gcc gcc-c++ libcurl-devel libedit-devel libuuid-devel
+          libxml2-devel ncurses-devel python3-devel sqlite-devel zlib-devel tar gzip
+          which findutils gnupg2 curl
+      - uses: actions/checkout@v4
+      - name: Install Swift 6.4.3 for RHEL 9
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$(mktemp -d)"
+          swift_url=https://download.swift.org/swift-6.4.3-release/ubi9/swift-6.4.3-RELEASE/swift-6.4.3-RELEASE-ubi9.tar.gz
+          curl --fail --location --retry 3 "$swift_url" --output /tmp/swift.tar.gz
+          curl --fail --location --retry 3 "$swift_url.sig" --output /tmp/swift.tar.gz.sig
+          curl --fail --location --compressed --retry 3 https://www.swift.org/keys/all-keys.asc --output /tmp/swift-keys.asc
+          gpg --batch --quiet --import /tmp/swift-keys.asc
+          gpg --batch --status-fd 1 --verify /tmp/swift.tar.gz.sig /tmp/swift.tar.gz > /tmp/swift-signature-status
+          grep -E '^\[GNUPG:\] VALIDSIG .*52BB7E3DE28A71BE22EC05FFEF80A866B47A981F' /tmp/swift-signature-status
+          mkdir -p /opt/swift
+          tar -xzf /tmp/swift.tar.gz -C /opt/swift --strip-components=1
+          rm -rf "$GNUPGHOME" /tmp/swift.tar.gz /tmp/swift.tar.gz.sig /tmp/swift-keys.asc
+          echo /opt/swift/usr/bin >> "$GITHUB_PATH"
+      - name: Show platform and toolchain
+        run: |
+          cat /etc/os-release
+          swift --version
+      - name: Build and test the package
+        run: swift test --no-parallel --jobs 2
+      - name: Create a pull-request fixture
+        id: fixture
+        run: |
+          bash Tests/Fixtures/create-pr-package.sh "$GITHUB_WORKSPACE/pr-fixture"
+          echo "head=$(git -C pr-fixture rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "base=$(git -C pr-fixture rev-parse HEAD^)" >> "$GITHUB_OUTPUT"
+      - name: Build the reusable action's CLI with caching
+        id: cli
+        uses: ./.github/actions/build-cli
+        with:
+          cache-path: .mutation-cli-cache
+      - name: Run changed sources and changed or matching tests
+        id: mutation
+        uses: ./.github/actions/run-mutation-testing
+        with:
+          project: pr-fixture
+          project-kind: swift-package
+          source-commit: ${{ steps.fixture.outputs.head }}
+          source-base: ${{ steps.fixture.outputs.base }}
+          source-scope: changed
+          test-scope: changed-and-matching
+          cache-path: ${{ github.workspace }}/.mutation-cli-cache
+          operators: arithmetic
+          workers: '1'
+      - name: Verify mutation scope and result
+        shell: bash
+        env:
+          RUN_STATUS: ${{ steps.mutation.outputs.run-status }}
+          REPORT_DIRECTORY: ${{ steps.mutation.outputs.report-directory }}
+        run: |
+          set -euo pipefail
+          test "$RUN_STATUS" = completed
+          python3 - "$REPORT_DIRECTORY/report.json" <<'PY'
+          import json, sys
+          with open(sys.argv[1]) as report_file:
+              report = json.load(report_file)
+          assert report['scope']['sources'] == ['Sources/Sample/Arithmetic.swift'], report['scope']
+          assert set(report['scope']['tests']) == {
+              'ArithmeticTests/increments', 'ChangedTests/checksAnotherInput'
+          }, report['scope']
+          assert report['summary']['killed'] == 1, report['summary']
+          PY
+      - name: Create a docs-only change
+        id: docs
+        run: |
+          cd pr-fixture
+          echo 'Documentation' > README.md
+          git add README.md
+          git commit -m documentation
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "base=$(git rev-parse HEAD^)" >> "$GITHUB_OUTPUT"
+      - name: Skip when no production Swift files changed
+        id: skipped
+        uses: ./.github/actions/run-mutation-testing
+        with:
+          project: pr-fixture
+          source-commit: ${{ steps.docs.outputs.head }}
+          source-base: ${{ steps.docs.outputs.base }}
+          tool-path: ${{ steps.cli.outputs.tool-path }}
+      - name: Verify skipped status and stale report cleanup
+        env:
+          RUN_STATUS: ${{ steps.skipped.outputs.run-status }}
+          REPORT_DIRECTORY: ${{ steps.skipped.outputs.report-directory }}
+        run: |
+          test "$RUN_STATUS" = skipped
+          test ! -e "$REPORT_DIRECTORY/report.json"
+          test ! -e "$REPORT_DIRECTORY/report.md"

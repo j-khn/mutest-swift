@@ -136,7 +136,11 @@ public struct ProcessRunner: Sendable {
         }
         defer { if monitorFD >= 0 { _ = close(monitorFD) } }
 
+        #if canImport(Darwin)
         var actions: posix_spawn_file_actions_t? = nil
+        #else
+        var actions = posix_spawn_file_actions_t()
+        #endif
         guard posix_spawn_file_actions_init(&actions) == 0 else { throw ProcessRunnerError.ioFailed("cannot initialize file actions") }
         defer { posix_spawn_file_actions_destroy(&actions) }
         _ = posix_spawn_file_actions_adddup2(&actions, outputFD, STDOUT_FILENO)
@@ -149,7 +153,11 @@ public struct ProcessRunner: Sendable {
         #endif
         guard chdirResult == 0 else { throw ProcessRunnerError.ioFailed("cannot set working directory") }
 
+        #if canImport(Darwin)
         var attributes: posix_spawnattr_t? = nil
+        #else
+        var attributes = posix_spawnattr_t()
+        #endif
         guard posix_spawnattr_init(&attributes) == 0 else { throw ProcessRunnerError.ioFailed("cannot initialize spawn attributes") }
         defer { posix_spawnattr_destroy(&attributes) }
         _ = posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP))

@@ -68,6 +68,8 @@ struct SelectorTests {
             timeout: 10,
             output: root.appendingPathComponent("build.log")
         )
+        #expect(command.executable == "/usr/bin/env")
+        #expect(command.arguments.first == "swift")
         #expect(!command.arguments.contains("--filter"))
         #expect(command.arguments.contains("--build-tests"))
     }
@@ -86,6 +88,8 @@ struct SelectorTests {
             output: root.appendingPathComponent("test.log"),
             scratchPath: scratch
         )
+        #expect(command.executable == "/usr/bin/env")
+        #expect(command.arguments.first == "swift")
         #expect(command.arguments.contains("--skip-build"))
         #expect(command.arguments.contains("--scratch-path"))
         #expect(command.arguments.contains(scratch.path))
