@@ -238,6 +238,34 @@ runs:
           exit 1
         fi
         if [[ "$project_path" != /* ]]; then project_path="$GITHUB_WORKSPACE/$project_path"; fi
+
+        # A container job may run as a different user from actions/checkout.
+        # Trust only this project's checked-out repository, and only for this
+        # action's subprocesses; do not modify the runner's global Git config.
+        project_root="$project_path"
+        if [[ "$INPUT_PROJECT_KIND" == "xcode-project" || "$INPUT_PROJECT_KIND" == "xcode-workspace" ]]; then
+          project_root="$(dirname "$project_path")"
+        fi
+        workspace_root="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
+        if [[ -d "$project_root" ]]; then
+          candidate="$(cd "$project_root" && pwd -P)"
+          while [[ "$candidate" == "$workspace_root" || "$candidate" == "$workspace_root/"* ]]; do
+            if [[ -e "$candidate/.git" ]]; then
+              config_count="${GIT_CONFIG_COUNT:-0}"
+              if [[ ! "$config_count" =~ ^[0-9]+$ ]]; then
+                echo "GIT_CONFIG_COUNT must be a nonnegative integer." >&2
+                exit 1
+              fi
+              config_count=$((10#$config_count))
+              export "GIT_CONFIG_KEY_${config_count}=safe.directory"
+              export "GIT_CONFIG_VALUE_${config_count}=$candidate"
+              export GIT_CONFIG_COUNT="$((config_count + 1))"
+              break
+            fi
+            [[ "$candidate" == "$workspace_root" ]] && break
+            candidate="$(dirname "$candidate")"
+          done
+        fi
         workers="${INPUT_WORKERS:-${INPUT_PARALLELISM:-2}}"
         destination="${INPUT_DESTINATION_SIMULATOR:-$INPUT_DESTINATION}"
         output_directory="${INPUT_OUTPUT:-${INPUT_OUTPUT_PATH:-.swift-mutation-testing}}"

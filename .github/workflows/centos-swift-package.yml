@@ -60,6 +60,13 @@ jobs:
           bash Tests/Fixtures/create-pr-package.sh "$GITHUB_WORKSPACE/pr-fixture"
           echo "head=$(git -C pr-fixture rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "base=$(git -C pr-fixture rev-parse HEAD^)" >> "$GITHUB_OUTPUT"
+      - name: Simulate checkout ownership in a container
+        run: |
+          chown -R 12345:12345 pr-fixture
+          if git -C pr-fixture rev-parse HEAD >/dev/null 2>&1; then
+            echo 'Expected Git to reject a checkout owned by another user.' >&2
+            exit 1
+          fi
       - name: Build the reusable action's CLI with caching
         id: cli
         uses: ./.github/actions/build-cli
@@ -100,6 +107,7 @@ jobs:
       - name: Create a docs-only change
         id: docs
         run: |
+          chown -R "$(id -u):$(id -g)" pr-fixture
           cd pr-fixture
           echo 'Documentation' > README.md
           git add README.md
