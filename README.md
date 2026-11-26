@@ -113,6 +113,8 @@ The last command runs all tests in A and B, every test in `CTests.swift`, all te
 <details>
 <summary>2. Run with GitHub Actions</summary>
 
+**Mixed repositories:** Use separate jobs for each project type. A CentOS job can test a Swift package only when that package and its tests support Linux. Xcode projects or workspaces and iOS simulator tests need macOS with Xcode; they cannot run on CentOS.
+
 
 GitHub reads workflow files from `.github/workflows/`, so create your workflow there. This complete example runs on pushes and pull requests to `main`, and nightly every day. Pushes and pull requests use the event's base commit. Nightly runs select commits from the previous 24 hours; the first nightly uses that same window. Change `main` and the Xcode settings to match your project.
 
