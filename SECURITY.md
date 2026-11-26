@@ -25,3 +25,14 @@ gh attestation verify <archive> --repo j-khn/mutest-swift
 ```
 
 Check that the signing key and attestation workflow identity are trusted by your organization. Older releases may not have signed tags, checksums, or attestations.
+
+## Signing commits
+
+Sign commits with a GPG or SSH key linked to your GitHub account. For a GPG key, set your signing key and enable signing in the repository:
+
+```sh
+git config user.signingkey <key-id>
+git config commit.gpgsign true
+```
+
+Use a commit email that is verified on GitHub and included in the GPG key. Check a commit with `git log --show-signature -1` and its Verified status on GitHub. Previously published commits may be unsigned.
