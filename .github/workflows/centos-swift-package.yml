@@ -29,7 +29,7 @@ jobs:
           dnf -y install git gcc gcc-c++ libcurl-devel libedit-devel libuuid-devel
           libxml2-devel ncurses-devel python3-devel sqlite-devel zlib-devel tar gzip
           which findutils gnupg2
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install Swift 6.4.3
         shell: bash
         env:

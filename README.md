@@ -294,6 +294,19 @@ Mutation types include changing comparisons, Boolean values, logical and arithme
 - The verdict cache can reuse completed mutants on later runs when the code, tests, selectors, build settings, toolchain, and tool version still match.
 - `--no-cache` disables cache reads and writes. `--no-resume` ignores earlier results but still saves new ones.
 
+## Releases
+
+Maintainers publish releases from the **Signed release** workflow on `main`. Choose **Actions → Signed release → Run workflow** and enter the version without the `v` prefix, such as `0.3.1`. The workflow signs the version tag using the `release` environment, creates a source archive and SHA-256 checksum, publishes a GitHub Release, and attests the archive provenance.
+
+After downloading the archive and checksum into the same directory, verify them with:
+
+```sh
+shasum -a 256 -c mutest-swift-v0.3.1.tar.gz.sha256
+gh attestation verify mutest-swift-v0.3.1.tar.gz --owner j-khn
+```
+
+To verify the signed tag, fetch it and run `git tag -v v0.3.1` in a clone of the repository.
+
 ## License
 
 Licensed under the [MIT License](LICENSE).
