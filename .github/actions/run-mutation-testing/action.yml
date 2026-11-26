@@ -347,7 +347,7 @@ runs:
         else
           echo "run-status=skipped" >> "$GITHUB_OUTPUT"
         fi
-    - name: Show Xcode build and simulator logs after failure
+    - name: Show build, baseline, and simulator logs after failure
       if: failure()
       shell: bash
       env:
@@ -355,14 +355,14 @@ runs:
       run: |
         set -euo pipefail
         found=false
-        for log in "$REPORT_DIRECTORY"/logs/*build*.log "$REPORT_DIRECTORY"/logs/simulators/boot-*.log "$REPORT_DIRECTORY"/logs/simulators/bootstatus-*.log; do
+        for log in "$REPORT_DIRECTORY"/logs/*build*.log "$REPORT_DIRECTORY"/logs/baseline.log "$REPORT_DIRECTORY"/logs/baseline-worker-*.log "$REPORT_DIRECTORY"/logs/baseline-recheck-worker-*.log "$REPORT_DIRECTORY"/logs/dependency-resolution.log "$REPORT_DIRECTORY"/logs/simulators/boot-*.log "$REPORT_DIRECTORY"/logs/simulators/bootstatus-*.log; do
           [[ -f "$log" ]] || continue
           found=true
           echo "::group::Failure log: $(basename "$log")"
           tail -n 100 "$log"
           echo "::endgroup::"
         done
-        if [[ "$found" == false ]]; then echo "No Xcode build or simulator logs were produced."; fi
+        if [[ "$found" == false ]]; then echo "No build, baseline, or simulator logs were produced."; fi
     - name: Add Markdown report to the job summary
       if: always()
       shell: bash
