@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
 
 struct PackageDependencyGraph: Sendable {
     var localPackages: [URL]
@@ -49,7 +52,7 @@ enum PackageDependencyResolver {
             packages.append(package)
             index += 1
             let dumpLog = logs.appendingPathComponent("package-manifest-\(index).json")
-            let dump = try runner.run(.init(executable: "/usr/bin/swift", arguments: ["package", "dump-package"],
+            let dump = try runner.run(.init(executable: "/usr/bin/env", arguments: ["swift", "package", "dump-package"],
                 workingDirectory: package, timeout: timeout, outputFile: dumpLog))
             guard !dump.timedOut, dump.exitCode == 0 else {
                 throw MutationEngineError.invalidProject("Could not read package dependencies from \(manifest.path). See \(dumpLog.path)")

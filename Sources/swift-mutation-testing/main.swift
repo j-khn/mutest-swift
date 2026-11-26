@@ -27,7 +27,7 @@ enum SwiftMutationTestingCLI {
         do {
             let arguments = try parse(Array(CommandLine.arguments.dropFirst()))
             if arguments.command == "help" || arguments.flags.contains("--help") || arguments.flags.contains("-h") { print(help); return }
-            if arguments.command == "version" { print("mutest-swift 0.3.0"); return }
+            if arguments.command == "version" { print("mutest-swift 0.3.1"); return }
             if arguments.command == "validate" {
                 var configuration = try makeConfiguration(arguments)
                 _ = try applyCommitScope(arguments, to: &configuration)
@@ -54,11 +54,11 @@ enum SwiftMutationTestingCLI {
             let reportDirectory = output ?? configuredOutput ?? projectRoot.appendingPathComponent(".swift-mutation-testing")
             print("Reports: \(reportDirectory.path)")
             if let gate = report.qualityGate, !gate.passed {
-                for failure in gate.failures { fputs("Quality gate: \(failure)\n", stderr) }
+                for failure in gate.failures { FileHandle.standardError.write(Data("Quality gate: \(failure)\n".utf8)) }
                 exit(2)
             }
         } catch {
-            fputs("error: \(error)\n", stderr)
+            FileHandle.standardError.write(Data("error: \(error)\n".utf8))
             exit(1)
         }
     }
@@ -222,7 +222,8 @@ enum SwiftMutationTestingCLI {
         if testScope != "all" {
             configuration.tests.files = Array(Set(configuration.tests.files + selectedTestFiles)).sorted()
             configuration.project.testPackageRoots = Array(Set(configuration.project.testPackageRoots + selection.testPackageRoots)).sorted()
-            if selectedTestFiles.isEmpty && configuration.tests.isEmpty && configuration.project.testTargets.isEmpty {
+            if !(sourceScope == "changed" && sourceFiles.isEmpty)
+                && selectedTestFiles.isEmpty && configuration.tests.isEmpty && configuration.project.testTargets.isEmpty {
                 throw CLIError.usage("No test files were selected from the commit range. Use --test-scope all, pass a test selector, or choose a full --test-target.")
             }
         }
@@ -305,7 +306,7 @@ enum SwiftMutationTestingCLI {
     }
 
     static let help = """
-    mutest-swift 0.3.0
+    mutest-swift 0.3.1
 
     Usage:
       swift-mutation-testing run [options]

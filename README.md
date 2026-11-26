@@ -36,7 +36,7 @@ Mutation testing is not a way to write code. You do not write special code for i
 
 ### 1. Run locally
 
-Requirements: macOS 14 or newer, Swift 6.0 or newer, and Python 3. Install Xcode to test Xcode projects or iOS apps.
+Requirements: macOS 14 or newer, Swift 6.0 or newer, and Python 3. Install Xcode to test Xcode projects or iOS apps. Swift packages can also run through the CLI or GitHub Action on Linux with a compatible Swift toolchain; CentOS Stream 9 and 10 are covered by the integration workflow below. The interactive `./run` launcher is for Xcode and iOS simulator projects.
 
 ```sh
 mkdir -p ~/Tools
@@ -110,7 +110,11 @@ The last command runs all tests in A and B, every test in `CTests.swift`, all te
 
 </details>
 
-### 2. Run with GitHub Actions
+<details>
+<summary>2. Run with GitHub Actions</summary>
+
+**Mixed repositories:** Use separate jobs for each project type. A CentOS job can test a Swift package only when that package and its tests support Linux. Xcode projects or workspaces and iOS simulator tests need macOS with Xcode; they cannot run on CentOS.
+
 
 GitHub reads workflow files from `.github/workflows/`, so create your workflow there. This complete example runs on pushes and pull requests to `main`, and nightly every day. Pushes and pull requests use the event's base commit. Nightly runs select commits from the previous 24 hours; the first nightly uses that same window. Change `main` and the Xcode settings to match your project.
 
@@ -192,6 +196,39 @@ Replace `MyApp` and the simulator name with values from your project and runner.
 
 The runner needs Xcode and the selected iOS Simulator runtime installed. Change `[self-hosted, macos]` if your runner uses different labels.
 
+#### Pull requests on a CentOS runner
+
+For a Swift package that builds and tests on Linux, the action can compare the pull request's merge commit with its base commit. This selects changed production Swift files and runs tests in both changed test files and filename-matched test files such as `FooTests.swift` for `Foo.swift`.
+
+```yaml
+name: Mutation tests
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  mutation-testing:
+    # Replace these with the labels of your CentOS runner.
+    runs-on: [self-hosted, Linux, X64, centos]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: swift --version
+      - uses: j-khn/mutest-swift/.github/actions/run-mutation-testing@main
+        with:
+          project: .
+          project-kind: swift-package
+          source-commit: ${{ github.sha }}
+          source-base: ${{ github.event.pull_request.base.sha }}
+          source-scope: changed
+          test-scope: changed-and-matching
+          workers: '2'
+```
+
+Install Swift, Git, Bash, and the native libraries required by your package on the runner. The GitHub Action builds mutest-swift from source using the Swift toolchain on `PATH`; use a released version tag in place of `main` to pin it. For a package in a subdirectory, set `project` to that package directory. The tested revision must be the checked-out revision, and both commits must be present locally.
+
+If no production Swift files changed, mutation testing is skipped, including on test-only PRs. If production files changed but no changed or filename-matched tests are found, the action fails rather than silently testing nothing. Use `test-scope: all` for the full test plan or set `test-file-suffix` for your naming convention. Scoping tests to changed or matching files can miss failures in other tests. Xcode projects and iOS simulator tests still require a macOS runner with Xcode.
+
 <details>
 <summary>GitHub Action inputs</summary>
 
@@ -224,9 +261,12 @@ The runner needs Xcode and the selected iOS Simulator runtime installed. Change 
 | `fail-on-new-survivors` | `true` or `false`; default `false` | Fails if this run adds survivors compared with the baseline. |
 | `maximum-integrity-warnings` | Zero or higher; default `0` | Maximum allowed integrity warnings. |
 | `output` | Folder; default `.swift-mutation-testing` | Where reports are written; matches `--output`. |
+| `artifact-name` | Default `swift-mutation-testing-report` | Uploaded report name; set a different name for each matrix job. |
 | `tool-path` | Executable path; blank by default | Use a previously built CLI. Usually leave blank. |
 
 The older input names `project-path`, `source`, `suite`, `test`, `test-targets`, `destination`, `parallelism`, and `output-path` remain accepted as aliases.
+
+</details>
 
 </details>
 

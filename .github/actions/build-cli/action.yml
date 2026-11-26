@@ -32,9 +32,8 @@ runs:
 
         tool_cache_path=""
         if [[ -n "$cache_root" && "$INPUT_NO_CACHE" != "true" ]]; then
-          toolchain_fingerprint="$( { xcode-select -p; swift --version; } | shasum -a 256 | awk '{print $1}')"
-          package_fingerprint="$(cd "$engine_path" && { shasum -a 256 Package.swift Package.resolved; find Sources -type f -name '*.swift' -print | LC_ALL=C sort | while IFS= read -r file; do printf '%s ' "$file"; shasum -a 256 "$file" | awk '{print $1}'; done; } | shasum -a 256 | awk '{print $1}')"
-          tool_cache_path="$cache_root/tool-binaries/$toolchain_fingerprint-$package_fingerprint/swift-mutation-testing"
+          cache_key="$(bash "$engine_path/Scripts/cli-cache-key.sh")"
+          tool_cache_path="$cache_root/tool-binaries/$cache_key/swift-mutation-testing"
           if [[ -f "$tool_cache_path" ]]; then
             chmod +x "$tool_cache_path"
             if "$tool_cache_path" version >/dev/null 2>&1; then
