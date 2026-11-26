@@ -97,8 +97,8 @@ jobs:
           chmod 700 "$wrapper"
           trap 'rm -f "$passphrase_file" "$wrapper"' EXIT
 
-          git config user.name "mutest-swift Release Bot"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "j-khn"
+          git config user.email "167302992+j-khn@users.noreply.github.com"
           git -c gpg.program="$wrapper" -c user.signingkey="$FINGERPRINT" \
             tag --sign --local-user "$FINGERPRINT" \
             --message "mutest-swift $TAG" "$TAG" "$GITHUB_SHA"
