@@ -36,7 +36,7 @@ Mutation testing is not a way to write code. You do not write special code for i
 
 ### 1. Run locally
 
-Requirements: macOS 14 or newer, Swift 6.0 or newer, and Python 3. Install Xcode to test Xcode projects or iOS apps. Swift packages can also run through the CLI or GitHub Action on Linux with a compatible Swift toolchain; CentOS Stream 9 and 10 are covered by the integration workflow below. The interactive `./run` launcher is for Xcode and iOS simulator projects.
+Requirements: macOS 14 or newer, Swift 6.0 or newer, and Python 3. Install Xcode to test Xcode projects or iOS apps. Swift packages can also run through the CLI or GitHub Action on Linux when their code, dependencies, and tests support Linux. The interactive `./run` launcher is for Xcode and iOS simulator projects.
 
 ```sh
 mkdir -p ~/Tools
@@ -112,7 +112,7 @@ The last command runs all tests in A and B, every test in `CTests.swift`, all te
 
 ### 2. Run with GitHub Actions
 
-**Mixed repositories:** Use separate jobs for each project type. A CentOS job can test a Swift package only when that package and its tests support Linux. Xcode projects or workspaces and iOS simulator tests need macOS with Xcode; they cannot run on CentOS.
+**Mixed repositories:** Use separate jobs for each project type. Linux runners can test only packages whose code, dependencies, and tests support Linux. Xcode projects or workspaces and iOS simulator tests need macOS with Xcode.
 
 GitHub reads workflow files from `.github/workflows/`, so create your workflow there. This complete example runs on pushes and pull requests to `main`, and nightly every day. Pushes and pull requests use the event's base commit. Nightly runs select commits from the previous 24 hours; the first nightly uses that same window. Change `main` and the Xcode settings to match your project.
 
@@ -193,41 +193,6 @@ jobs:
 Replace `MyApp` and the simulator name with values from your project and runner. For a Swift package, use `project: .` and `project-kind: swift-package`; omit `scheme` and `destination-simulator`. The `uses:` line calls the reusable action in this repository. It builds or reuses the CLI, runs the selected scope, adds the Markdown report to the workflow summary, and uploads the reports. You can replace it with direct CLI commands, but then your workflow must do those steps itself.
 
 The runner needs Xcode and the selected iOS Simulator runtime installed. Change `[self-hosted, macos]` if your runner uses different labels.
-
-#### Linux-compatible Swift package pull requests on CentOS
-
-This example is only for a Swift package whose code, dependencies, and tests build and run on Linux. It does not run Xcode or iOS simulator tests. For an iOS app or iOS-only package, use a macOS runner with Xcode instead. In a mixed repository, use a separate job for each Linux-compatible package and each Xcode project or workspace.
-
-The action compares the pull request's merge commit with its base commit. It selects changed production Swift files and tests from changed test files and filename-matched files such as `FooTests.swift` for `Foo.swift`.
-
-```yaml
-name: Mutation tests
-on: [pull_request]
-permissions:
-  contents: read
-jobs:
-  mutation-testing:
-    # Replace these with the labels of your CentOS runner.
-    runs-on: [self-hosted, Linux, X64, centos]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - run: swift --version
-      - uses: j-khn/mutest-swift/.github/actions/run-mutation-testing@main
-        with:
-          project: .
-          project-kind: swift-package
-          source-commit: ${{ github.sha }}
-          source-base: ${{ github.event.pull_request.base.sha }}
-          source-scope: changed
-          test-scope: changed-and-matching
-          workers: '2'
-```
-
-Install Swift, Git, Bash, and the native libraries required by your package on the runner. The GitHub Action builds mutest-swift from source using the Swift toolchain on `PATH`; use a released version tag in place of `main` to pin it. For a package in a subdirectory, set `project` to that package directory. The tested revision must be the checked-out revision, and both commits must be present locally.
-
-If no production Swift files changed, mutation testing is skipped, including on test-only PRs. If production files changed but no changed or filename-matched tests are found, the action fails rather than silently testing nothing. Use `test-scope: all` for the full test plan or set `test-file-suffix` for your naming convention. Scoping tests to changed or matching files can miss failures in other tests. Xcode projects and iOS simulator tests still require a macOS runner with Xcode.
 
 <details>
 <summary>GitHub Action inputs</summary>
