@@ -110,7 +110,9 @@ The last command runs all tests in A and B, every test in `CTests.swift`, all te
 
 </details>
 
-### 2. Run with GitHub Actions
+<details>
+<summary>2. Run with GitHub Actions</summary>
+
 
 GitHub reads workflow files from `.github/workflows/`, so create your workflow there. This complete example runs on pushes and pull requests to `main`, and nightly every day. Pushes and pull requests use the event's base commit. Nightly runs select commits from the previous 24 hours; the first nightly uses that same window. Change `main` and the Xcode settings to match your project.
 
@@ -261,6 +263,8 @@ If no production Swift files changed, mutation testing is skipped, including on 
 | `tool-path` | Executable path; blank by default | Use a previously built CLI. Usually leave blank. |
 
 The older input names `project-path`, `source`, `suite`, `test`, `test-targets`, `destination`, `parallelism`, and `output-path` remain accepted as aliases.
+
+</details>
 
 </details>
 
