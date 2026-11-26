@@ -132,12 +132,6 @@ public enum MutationReportWriter {
             for warning in report.integrityWarnings { output += "- **\(warning.code):** \(warning.message)\n" }
             output += "\n"
         }
-        output += "## Mutants\n\n| Status | Operator | Source | Line | Original → replacement |\n|---|---|---|---:|---|\n"
-        for mutant in report.mutants {
-            let original = mutant.original.replacingOccurrences(of: "|", with: "\\|").replacingOccurrences(of: "\n", with: " ")
-            let replacement = mutant.replacement.replacingOccurrences(of: "|", with: "\\|").replacingOccurrences(of: "\n", with: " ")
-            output += "| \(mutant.status.rawValue) | \(mutant.operatorID.rawValue) | `\(mutant.source)` | \(mutant.line) | `\(original)` → `\(replacement)` |\n"
-        }
         if let gate = report.qualityGate {
             output += "\n## Quality gate\n\n"
             output += gate.passed ? "Passed\n" : "Failed\n"
