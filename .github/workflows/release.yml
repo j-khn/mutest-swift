@@ -60,6 +60,7 @@ jobs:
         id: signing-key
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GITHUB_SIGNING_EMAIL: 167302992+j-khn@users.noreply.github.com
         run: |
           set -euo pipefail
           export GNUPGHOME="$RUNNER_TEMP/gnupg"
@@ -72,6 +73,11 @@ jobs:
           fingerprint="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
           if [[ -z "$fingerprint" ]]; then
             echo "No secret signing key was imported." >&2
+            exit 1
+          fi
+          uid_text="$(gpg --batch --with-colons --list-keys "$fingerprint" | awk -F: '$1 == "uid" { print $10 }')"
+          if [[ "$uid_text" != *"$GITHUB_SIGNING_EMAIL"* ]]; then
+            echo "The signing key must include the verified GitHub email $GITHUB_SIGNING_EMAIL in a UID." >&2
             exit 1
           fi
           echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
