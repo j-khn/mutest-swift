@@ -360,7 +360,7 @@ public struct NativeTestAdapter: Sendable {
             case .baseline: args = ["test"]
             }
             if phase == .resolveDependencies {
-                return .init(executable: "/usr/bin/swift", arguments: args, workingDirectory: root, environment: environment, timeout: timeout, outputFile: output)
+                return .init(executable: "/usr/bin/env", arguments: ["swift"] + args, workingDirectory: root, environment: environment, timeout: timeout, outputFile: output)
             }
             var finalArgs = args
             if phase == .testWithoutBuilding, let scratchPath {
@@ -372,7 +372,7 @@ public struct NativeTestAdapter: Sendable {
                 let pattern = resolved.identifiers.map { "(?:^|[./])" + NSRegularExpression.escapedPattern(for: $0) + #"(?:\(|$)"# }.joined(separator: "|")
                 finalArgs += ["--filter", pattern]
             }
-            return .init(executable: "/usr/bin/swift", arguments: finalArgs, workingDirectory: root, environment: environment, timeout: timeout, outputFile: output, stopOnActivatedTestFailure: stopOnActivatedTestFailure, activationID: activationID, activationFile: activationFile)
+            return .init(executable: "/usr/bin/env", arguments: ["swift"] + finalArgs, workingDirectory: root, environment: environment, timeout: timeout, outputFile: output, stopOnActivatedTestFailure: stopOnActivatedTestFailure, activationID: activationID, activationFile: activationFile)
         case .xcodeProject, .xcodeWorkspace:
             guard let scheme = project.scheme, !scheme.isEmpty else { throw ContractError.invalidConfiguration("Xcode projects and workspaces require --scheme.") }
             let projectPath = root.appendingPathComponent(project.path).path

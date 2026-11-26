@@ -36,7 +36,7 @@ Mutation testing is not a way to write code. You do not write special code for i
 
 ### 1. Run locally
 
-Requirements: macOS 14 or newer, Swift 6.0 or newer, and Python 3. Install Xcode to test Xcode projects or iOS apps.
+Requirements: macOS 14 or newer, Swift 6.0 or newer, and Python 3. Install Xcode to test Xcode projects or iOS apps. Swift packages can also run through the CLI or GitHub Action on Linux when their code, dependencies, and tests support Linux. The interactive `./run` launcher is for Xcode and iOS simulator projects.
 
 ```sh
 mkdir -p ~/Tools
@@ -111,6 +111,8 @@ The last command runs all tests in A and B, every test in `CTests.swift`, all te
 </details>
 
 ### 2. Run with GitHub Actions
+
+**Mixed repositories:** Use separate jobs for each project type. Linux runners can test only packages whose code, dependencies, and tests support Linux. Xcode projects or workspaces and iOS simulator tests need macOS with Xcode.
 
 GitHub reads workflow files from `.github/workflows/`, so create your workflow there. This complete example runs on pushes and pull requests to `main`, and nightly every day. Pushes and pull requests use the event's base commit. Nightly runs select commits from the previous 24 hours; the first nightly uses that same window. Change `main` and the Xcode settings to match your project.
 
@@ -224,6 +226,7 @@ The runner needs Xcode and the selected iOS Simulator runtime installed. Change 
 | `fail-on-new-survivors` | `true` or `false`; default `false` | Fails if this run adds survivors compared with the baseline. |
 | `maximum-integrity-warnings` | Zero or higher; default `0` | Maximum allowed integrity warnings. |
 | `output` | Folder; default `.swift-mutation-testing` | Where reports are written; matches `--output`. |
+| `artifact-name` | Default `swift-mutation-testing-report` | Uploaded report name; set a different name for each matrix job. |
 | `tool-path` | Executable path; blank by default | Use a previously built CLI. Usually leave blank. |
 
 The older input names `project-path`, `source`, `suite`, `test`, `test-targets`, `destination`, `parallelism`, and `output-path` remain accepted as aliases.
@@ -253,6 +256,19 @@ Mutation types include changing comparisons, Boolean values, logical and arithme
 - JSON and Markdown reports include test counts and phase timings, such as build, baseline, mutant runs, and cleanup.
 - The verdict cache can reuse completed mutants on later runs when the code, tests, selectors, build settings, toolchain, and tool version still match.
 - `--no-cache` disables cache reads and writes. `--no-resume` ignores earlier results but still saves new ones.
+
+## Releases
+
+Maintainers publish releases from the **Signed release** workflow on `main`. Choose **Actions → Signed release → Run workflow** and enter the version without the `v` prefix, such as `0.3.1`. The workflow signs the version tag using the `release` environment, creates a source archive and SHA-256 checksum, publishes a GitHub Release, and attests the archive provenance.
+
+After downloading the archive and checksum into the same directory, verify them with:
+
+```sh
+shasum -a 256 -c mutest-swift-v0.3.1.tar.gz.sha256
+gh attestation verify mutest-swift-v0.3.1.tar.gz --owner j-khn
+```
+
+To verify the signed tag, fetch it and run `git tag -v v0.3.1` in a clone of the repository.
 
 ## License
 

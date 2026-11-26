@@ -1,0 +1,142 @@
+name: Signed release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without the v prefix, for example 0.3.1
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    name: Sign, package, and publish release
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate version and repository state
+        id: release
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Version must look like 0.3.1 (without a v prefix)." >&2
+            exit 1
+          fi
+          tag="v$VERSION"
+          if [[ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]]; then
+            echo "The checked out commit does not match the workflow commit." >&2
+            exit 1
+          fi
+          if [[ -n "$(git ls-remote --tags origin "refs/tags/$tag")" ]]; then
+            echo "Tag $tag already exists." >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "The checkout is not clean." >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Import release signing key
+        id: signing-key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GITHUB_SIGNING_EMAIL: 167302992+j-khn@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          install -m 700 -d "$GNUPGHOME"
+          key_file="$RUNNER_TEMP/release-signing-key.asc"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s' "$GPG_PRIVATE_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          gpg --batch --import "$key_file"
+          fingerprint="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
+          if [[ -z "$fingerprint" ]]; then
+            echo "No secret signing key was imported." >&2
+            exit 1
+          fi
+          uid_text="$(gpg --batch --with-colons --list-keys "$fingerprint" | awk -F: '$1 == "uid" { print $10 }')"
+          if [[ "$uid_text" != *"$GITHUB_SIGNING_EMAIL"* ]]; then
+            echo "The signing key must include the verified GitHub email $GITHUB_SIGNING_EMAIL in a UID." >&2
+            exit 1
+          fi
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+
+      - name: Create signed tag and source archive
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          FINGERPRINT: ${{ steps.signing-key.outputs.fingerprint }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          passphrase_file="$RUNNER_TEMP/gpg-passphrase"
+          wrapper="$RUNNER_TEMP/gpg-wrapper"
+          printf '%s' "$GPG_PASSPHRASE" > "$passphrase_file"
+          chmod 600 "$passphrase_file"
+          cat > "$wrapper" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec gpg --batch --yes --no-tty --pinentry-mode loopback \
+            --passphrase-file "$RUNNER_TEMP/gpg-passphrase" "$@"
+          EOF
+          chmod 700 "$wrapper"
+          trap 'rm -f "$passphrase_file" "$wrapper"' EXIT
+
+          git config user.name "j-khn"
+          git config user.email "167302992+j-khn@users.noreply.github.com"
+          git -c gpg.program="$wrapper" -c user.signingkey="$FINGERPRINT" \
+            tag --sign --local-user "$FINGERPRINT" \
+            --message "mutest-swift $TAG" "$TAG" "$GITHUB_SHA"
+          git -c gpg.program="$wrapper" tag --verify "$TAG"
+          git push origin "refs/tags/$TAG"
+
+          mkdir -p dist
+          archive="mutest-swift-$TAG.tar.gz"
+          git archive --format=tar.gz --prefix="mutest-swift-$TAG/" "$TAG" > "dist/$archive"
+          (cd dist && sha256sum "$archive" > "$archive.sha256")
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            "dist/mutest-swift-$TAG.tar.gz" \
+            "dist/mutest-swift-$TAG.tar.gz.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "mutest-swift $TAG" \
+            --generate-notes \
+            --verify-tag
+
+      - name: Attest release archive provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/mutest-swift-${{ steps.release.outputs.tag }}.tar.gz
+
+      - name: Remove signing material
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/gnupg"
+          rm -f "$RUNNER_TEMP/gpg-passphrase" "$RUNNER_TEMP/gpg-wrapper" "$RUNNER_TEMP/release-signing-key.asc"

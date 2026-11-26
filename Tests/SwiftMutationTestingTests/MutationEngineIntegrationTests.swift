@@ -315,7 +315,9 @@ struct MutationEngineIntegrationTests {
         var configuration = configuration(for: fixture.root, operators: [.logical])
         configuration.parallelism = 2
         configuration.timeouts.mutantSeconds = 2
-        configuration.timeouts.retryMultiplier = 2
+        // The first run still times out during the 2.2s sleep. Give the isolated
+        // retry enough time for SwiftPM startup on slower hosted macOS runners.
+        configuration.timeouts.retryMultiplier = 6
 
         let report = try MutationEngine().run(configuration: configuration, outputDirectory: output)
         printBuildDiagnosticsIfUnexpected(for: report, expectedUnbuildable: 0, output: output)

@@ -1,0 +1,153 @@
+name: CentOS Swift package integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  centos:
+    name: CentOS ${{ matrix.centos }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - centos: stream9
+            swift-platform: ubi9
+          - centos: stream10
+            swift-platform: ubi10
+    container: quay.io/centos/centos:${{ matrix.centos }}
+    timeout-minutes: 45
+    steps:
+      - name: Install build prerequisites
+        run: >-
+          dnf -y install git gcc gcc-c++ libcurl-devel libedit-devel libuuid-devel
+          libxml2-devel ncurses-devel python3-devel sqlite-devel zlib-devel tar gzip
+          which findutils gnupg2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Swift 6.4.3
+        shell: bash
+        env:
+          SWIFT_PLATFORM: ${{ matrix.swift-platform }}
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$(mktemp -d)"
+          swift_url="https://download.swift.org/swift-6.4.3-release/$SWIFT_PLATFORM/swift-6.4.3-RELEASE/swift-6.4.3-RELEASE-$SWIFT_PLATFORM.tar.gz"
+          curl --fail --location --retry 3 "$swift_url" --output /tmp/swift.tar.gz
+          curl --fail --location --retry 3 "$swift_url.sig" --output /tmp/swift.tar.gz.sig
+          curl --fail --location --compressed --retry 3 https://www.swift.org/keys/all-keys.asc --output /tmp/swift-keys.asc
+          gpg --batch --quiet --import /tmp/swift-keys.asc
+          gpg --batch --status-fd 1 --verify /tmp/swift.tar.gz.sig /tmp/swift.tar.gz > /tmp/swift-signature-status
+          grep -E '^\[GNUPG:\] VALIDSIG .*52BB7E3DE28A71BE22EC05FFEF80A866B47A981F' /tmp/swift-signature-status
+          mkdir -p /opt/swift
+          tar -xzf /tmp/swift.tar.gz -C /opt/swift --strip-components=1
+          rm -rf "$GNUPGHOME" /tmp/swift.tar.gz /tmp/swift.tar.gz.sig /tmp/swift-keys.asc
+          echo /opt/swift/usr/bin >> "$GITHUB_PATH"
+      - name: Show platform and toolchain
+        run: |
+          cat /etc/os-release
+          swift --version
+      - name: Build and test the package
+        run: swift test --no-parallel --jobs 2
+      - name: Create a pull-request fixture
+        id: fixture
+        run: |
+          bash Tests/Fixtures/create-pr-package.sh "$GITHUB_WORKSPACE/pr-fixture"
+          echo "head=$(git -C pr-fixture rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "base=$(git -C pr-fixture rev-parse HEAD^)" >> "$GITHUB_OUTPUT"
+      - name: Simulate checkout ownership in a container
+        run: |
+          chown -R 12345:12345 pr-fixture
+          if git -C pr-fixture rev-parse HEAD >/dev/null 2>&1; then
+            echo 'Expected Git to reject a checkout owned by another user.' >&2
+            exit 1
+          fi
+      - name: Build the reusable action's CLI with caching
+        id: cli
+        uses: ./.github/actions/build-cli
+        with:
+          cache-path: .mutation-cli-cache
+      - name: Run changed sources and changed or matching tests
+        id: mutation
+        uses: ./.github/actions/run-mutation-testing
+        with:
+          project: pr-fixture
+          project-kind: swift-package
+          source-commit: ${{ steps.fixture.outputs.head }}
+          source-base: ${{ steps.fixture.outputs.base }}
+          source-scope: changed
+          test-scope: changed-and-matching
+          cache-path: ${{ github.workspace }}/.mutation-cli-cache
+          artifact-name: mutation-report-${{ matrix.centos }}
+          operators: arithmetic
+          workers: '1'
+      - name: Verify mutation scope and result
+        shell: bash
+        env:
+          RUN_STATUS: ${{ steps.mutation.outputs.run-status }}
+          REPORT_DIRECTORY: ${{ steps.mutation.outputs.report-directory }}
+        run: |
+          set -euo pipefail
+          test "$RUN_STATUS" = completed
+          python3 - "$REPORT_DIRECTORY/report.json" <<'PY'
+          import json, sys
+          with open(sys.argv[1]) as report_file:
+              report = json.load(report_file)
+          assert report['scope']['sources'] == ['Sources/Sample/Arithmetic.swift'], report['scope']
+          assert set(report['scope']['tests']) == {
+              'ArithmeticTests/increments', 'ChangedTests/checksAnotherInput'
+          }, report['scope']
+          assert report['summary']['killed'] == 1, report['summary']
+          PY
+      - name: Create a docs-only change
+        id: docs
+        run: |
+          chown -R "$(id -u):$(id -g)" pr-fixture
+          cd pr-fixture
+          echo 'Documentation' > README.md
+          git add README.md
+          git commit -m documentation
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "base=$(git rev-parse HEAD^)" >> "$GITHUB_OUTPUT"
+      - name: Skip when no production Swift files changed
+        id: skipped
+        uses: ./.github/actions/run-mutation-testing
+        with:
+          project: pr-fixture
+          source-commit: ${{ steps.docs.outputs.head }}
+          source-base: ${{ steps.docs.outputs.base }}
+          tool-path: ${{ steps.cli.outputs.tool-path }}
+      - name: Verify skipped status and stale report cleanup
+        env:
+          RUN_STATUS: ${{ steps.skipped.outputs.run-status }}
+          REPORT_DIRECTORY: ${{ steps.skipped.outputs.report-directory }}
+        run: |
+          test "$RUN_STATUS" = skipped
+          test ! -e "$REPORT_DIRECTORY/report.json"
+          test ! -e "$REPORT_DIRECTORY/report.md"
+      - name: Create a test-only change
+        id: tests-only
+        run: |
+          cd pr-fixture
+          echo '// Another test-only change.' >> Tests/SampleTests/ChangedTests.swift
+          git add Tests/SampleTests/ChangedTests.swift
+          git commit -m 'change only tests'
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "base=$(git rev-parse HEAD^)" >> "$GITHUB_OUTPUT"
+      - name: Skip test-only mutation run
+        id: skipped-tests
+        uses: ./.github/actions/run-mutation-testing
+        with:
+          project: pr-fixture
+          source-commit: ${{ steps.tests-only.outputs.head }}
+          source-base: ${{ steps.tests-only.outputs.base }}
+          tool-path: ${{ steps.cli.outputs.tool-path }}
+      - name: Verify test-only skip
+        env:
+          RUN_STATUS: ${{ steps.skipped-tests.outputs.run-status }}
+        run: test "$RUN_STATUS" = skipped

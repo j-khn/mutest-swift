@@ -165,6 +165,10 @@ inputs:
     description: Legacy alias for output
     required: false
     default: .swift-mutation-testing
+  artifact-name:
+    description: Name of the uploaded report artifact; use distinct names for matrix jobs
+    required: false
+    default: swift-mutation-testing-report
   tool-path:
     description: Optional path to a CLI built by the build-cli action
     required: false
@@ -234,6 +238,34 @@ runs:
           exit 1
         fi
         if [[ "$project_path" != /* ]]; then project_path="$GITHUB_WORKSPACE/$project_path"; fi
+
+        # A container job may run as a different user from actions/checkout.
+        # Trust only this project's checked-out repository, and only for this
+        # action's subprocesses; do not modify the runner's global Git config.
+        project_root="$project_path"
+        if [[ "$INPUT_PROJECT_KIND" == "xcode-project" || "$INPUT_PROJECT_KIND" == "xcode-workspace" ]]; then
+          project_root="$(dirname "$project_path")"
+        fi
+        workspace_root="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
+        if [[ -d "$project_root" ]]; then
+          candidate="$(cd "$project_root" && pwd -P)"
+          while [[ "$candidate" == "$workspace_root" || "$candidate" == "$workspace_root/"* ]]; do
+            if [[ -e "$candidate/.git" ]]; then
+              config_count="${GIT_CONFIG_COUNT:-0}"
+              if [[ ! "$config_count" =~ ^[0-9]+$ ]]; then
+                echo "GIT_CONFIG_COUNT must be a nonnegative integer." >&2
+                exit 1
+              fi
+              config_count=$((10#$config_count))
+              export "GIT_CONFIG_KEY_${config_count}=safe.directory"
+              export "GIT_CONFIG_VALUE_${config_count}=$candidate"
+              export GIT_CONFIG_COUNT="$((config_count + 1))"
+              break
+            fi
+            [[ "$candidate" == "$workspace_root" ]] && break
+            candidate="$(dirname "$candidate")"
+          done
+        fi
         workers="${INPUT_WORKERS:-${INPUT_PARALLELISM:-2}}"
         destination="${INPUT_DESTINATION_SIMULATOR:-$INPUT_DESTINATION}"
         output_directory="${INPUT_OUTPUT:-${INPUT_OUTPUT_PATH:-.swift-mutation-testing}}"
@@ -286,9 +318,8 @@ runs:
           fi
           "$tool_binary" version
         elif [[ -n "$INPUT_CACHE_PATH" && "$INPUT_NO_CACHE" != "true" ]]; then
-          toolchain_fingerprint="$( { xcode-select -p; swift --version; } | shasum -a 256 | awk '{print $1}')"
-          package_fingerprint="$(cd "$engine_path" && { shasum -a 256 Package.swift Package.resolved; find Sources -type f -name '*.swift' -print | LC_ALL=C sort | while IFS= read -r file; do printf '%s ' "$file"; shasum -a 256 "$file" | awk '{print $1}'; done; } | shasum -a 256 | awk '{print $1}')"
-          tool_cache_path="$cache_path/tool-binaries/$toolchain_fingerprint-$package_fingerprint/swift-mutation-testing"
+          cache_key="$(bash "$engine_path/Scripts/cli-cache-key.sh")"
+          tool_cache_path="$cache_path/tool-binaries/$cache_key/swift-mutation-testing"
           if [[ -f "$tool_cache_path" ]]; then
             chmod +x "$tool_cache_path"
             if "$tool_cache_path" version >/dev/null 2>&1; then tool_binary="$tool_cache_path"; fi
@@ -307,13 +338,16 @@ runs:
             tool_binary="$built_tool"
           fi
         fi
+        # A persistent runner may still have reports from an earlier campaign.
+        # Clear those reports so a skipped run cannot publish stale results.
+        rm -f -- "$output/report.md" "$output/report.json"
         "$tool_binary" "${args[@]}" --output "$output"
         if [[ -f "$output/report.md" ]]; then
           echo "run-status=completed" >> "$GITHUB_OUTPUT"
         else
           echo "run-status=skipped" >> "$GITHUB_OUTPUT"
         fi
-    - name: Show Xcode build and simulator logs after failure
+    - name: Show build, baseline, and simulator logs after failure
       if: failure()
       shell: bash
       env:
@@ -321,14 +355,14 @@ runs:
       run: |
         set -euo pipefail
         found=false
-        for log in "$REPORT_DIRECTORY"/logs/*build*.log "$REPORT_DIRECTORY"/logs/simulators/boot-*.log "$REPORT_DIRECTORY"/logs/simulators/bootstatus-*.log; do
+        for log in "$REPORT_DIRECTORY"/logs/*build*.log "$REPORT_DIRECTORY"/logs/baseline.log "$REPORT_DIRECTORY"/logs/baseline-worker-*.log "$REPORT_DIRECTORY"/logs/baseline-recheck-worker-*.log "$REPORT_DIRECTORY"/logs/dependency-resolution.log "$REPORT_DIRECTORY"/logs/simulators/boot-*.log "$REPORT_DIRECTORY"/logs/simulators/bootstatus-*.log; do
           [[ -f "$log" ]] || continue
           found=true
           echo "::group::Failure log: $(basename "$log")"
           tail -n 100 "$log"
           echo "::endgroup::"
         done
-        if [[ "$found" == false ]]; then echo "No Xcode build or simulator logs were produced."; fi
+        if [[ "$found" == false ]]; then echo "No build, baseline, or simulator logs were produced."; fi
     - name: Add Markdown report to the job summary
       if: always()
       shell: bash
@@ -346,9 +380,9 @@ runs:
         fi
     - name: Upload mutation reports
       if: always() && steps.arguments.outputs.run-status != 'skipped'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
-        name: swift-mutation-testing-report
+        name: ${{ inputs.artifact-name }}
         path: |
           ${{ steps.arguments.outputs.report-directory }}/report.md
           ${{ steps.arguments.outputs.report-directory }}/report.json
