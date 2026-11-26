@@ -165,6 +165,10 @@ inputs:
     description: Legacy alias for output
     required: false
     default: .swift-mutation-testing
+  artifact-name:
+    description: Name of the uploaded report artifact; use distinct names for matrix jobs
+    required: false
+    default: swift-mutation-testing-report
   tool-path:
     description: Optional path to a CLI built by the build-cli action
     required: false
@@ -350,7 +354,7 @@ runs:
       if: always() && steps.arguments.outputs.run-status != 'skipped'
       uses: actions/upload-artifact@v4
       with:
-        name: swift-mutation-testing-report
+        name: ${{ inputs.artifact-name }}
         path: |
           ${{ steps.arguments.outputs.report-directory }}/report.md
           ${{ steps.arguments.outputs.report-directory }}/report.json

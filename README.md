@@ -36,7 +36,7 @@ Mutation testing is not a way to write code. You do not write special code for i
 
 ### 1. Run locally
 
-Requirements: macOS 14 or newer, Swift 6.0 or newer, and Python 3. Install Xcode to test Xcode projects or iOS apps. Swift packages can also run through the CLI or GitHub Action on Linux with a compatible Swift toolchain; CentOS Stream 9 is covered by the integration workflow below. The interactive `./run` launcher is for Xcode and iOS simulator projects.
+Requirements: macOS 14 or newer, Swift 6.0 or newer, and Python 3. Install Xcode to test Xcode projects or iOS apps. Swift packages can also run through the CLI or GitHub Action on Linux with a compatible Swift toolchain; CentOS Stream 9 and 10 are covered by the integration workflow below. The interactive `./run` launcher is for Xcode and iOS simulator projects.
 
 ```sh
 mkdir -p ~/Tools
@@ -257,6 +257,7 @@ If no production Swift files changed, mutation testing is skipped, including on 
 | `fail-on-new-survivors` | `true` or `false`; default `false` | Fails if this run adds survivors compared with the baseline. |
 | `maximum-integrity-warnings` | Zero or higher; default `0` | Maximum allowed integrity warnings. |
 | `output` | Folder; default `.swift-mutation-testing` | Where reports are written; matches `--output`. |
+| `artifact-name` | Default `swift-mutation-testing-report` | Uploaded report name; set a different name for each matrix job. |
 | `tool-path` | Executable path; blank by default | Use a previously built CLI. Usually leave blank. |
 
 The older input names `project-path`, `source`, `suite`, `test`, `test-targets`, `destination`, `parallelism`, and `output-path` remain accepted as aliases.
