@@ -1044,7 +1044,9 @@ public struct MutationEngine: Sendable {
 
     func discoverSources(root: URL, requested: [String], kind: ProjectKind, excluding excludedPaths: [URL] = []) throws -> [URL] {
         let manager = FileManager.default
-        let root = root.standardizedFileURL
+        // A base URL without an explicit directory marker resolves relative paths
+        // against its parent on Linux, even when the path is an existing directory.
+        let root = URL(fileURLWithPath: root.standardizedFileURL.path, isDirectory: true)
         let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
         let excludedRoots = excludedPaths.map { $0.standardizedFileURL.path }
         func isExcluded(_ file: URL) -> Bool {

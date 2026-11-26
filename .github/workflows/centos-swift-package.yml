@@ -18,7 +18,7 @@ jobs:
         run: >-
           dnf -y install git gcc gcc-c++ libcurl-devel libedit-devel libuuid-devel
           libxml2-devel ncurses-devel python3-devel sqlite-devel zlib-devel tar gzip
-          which findutils gnupg2 curl
+          which findutils gnupg2
       - uses: actions/checkout@v4
       - name: Install Swift 6.4.3 for RHEL 9
         shell: bash
