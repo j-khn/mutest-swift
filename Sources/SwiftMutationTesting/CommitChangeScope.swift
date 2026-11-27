@@ -54,6 +54,10 @@ public enum CommitChangeScopeResolver {
             }
             let names = targets.filter { $0["type"] as? String == "test" }.compactMap { $0["name"] as? String }
             guard !names.isEmpty else { throw CommitScopeError.usage("Package \(package) declares no test targets.") }
+            let duplicate = result.intersection(names)
+            guard duplicate.isEmpty else {
+                throw CommitScopeError.usage("Affected packages have duplicate test target names: \(duplicate.sorted().joined(separator: ", ")). Select targets explicitly.")
+            }
             result.formUnion(names)
         }
         return result.sorted()

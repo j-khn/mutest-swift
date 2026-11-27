@@ -338,7 +338,7 @@ enum SwiftMutationTestingCLI {
       --source-commit COMMIT         Commit or ref to analyze; must match the checked-out commit
       --source-base COMMIT           Compare from this commit or ref (default: source commit's parent)
       --source-scope SCOPE           all | changed (commit mode defaults to changed)
-      --test-scope SCOPE              all | changed | matching | changed-and-matching
+      --test-scope SCOPE              all | changed | matching | changed-and-matching | affected-packages
                                       commit mode defaults to changed-and-matching
       --test-file-suffix SUFFIX       Filename suffix after a changed source name (default: Tests.swift); repeatable
       --destination-simulator VALUE  iOS Simulator for Xcode tests, e.g. platform=iOS Simulator,name=iPhone 17,OS=latest

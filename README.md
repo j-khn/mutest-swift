@@ -70,7 +70,7 @@ For an Xcode project or workspace, the tool asks which scheme, test scope, and s
 | `--source-commit COMMIT` | Commit or ref currently checked out | Turns on commit-based selection. Defaults to changed production files and changed plus matching tests. |
 | `--source-base COMMIT` | Commit or ref; defaults to the source commit's parent | Compares a commit range, such as all commits since the last nightly. |
 | `--source-scope` | `changed` (commit mode default) or `all` | Mutates only production Swift files changed in the commit range, or all source files. |
-| `--test-scope` | `changed`, `matching`, `changed-and-matching` (commit mode default), or `all` | Chooses changed test files, filename-matched tests, both, or the full test plan. |
+| `--test-scope` | `changed`, `matching`, `changed-and-matching` (commit mode default), `affected-packages`, or `all` | Chooses changed or matching test files, affected package test targets, or the full test plan. |
 | `--test-file-suffix SUFFIX` | `Tests.swift` by default; repeatable | Looks for files such as `FooTests.swift` when changed source is `Foo.swift`. |
 | `--destination-simulator VALUE` | Xcode simulator destination string | Chooses the simulator. Asked interactively if missing. |
 | `--workers COUNT` | Positive number; default `2` | Runs up to this many mutants at once. |
@@ -208,7 +208,7 @@ The runner needs Xcode and the selected iOS Simulator runtime installed. Change 
 | `test-package-root` | One package path per line; optional | Maps test files from local Swift packages not listed directly in the Xcode project. Relative to the project root. |
 | `source-commit`, `source-base` | Commit SHA or ref; base optional | Selects a commit or commit range. `source-commit` must match the checked-out commit; blank `source-base` uses its first parent. |
 | `source-scope` | `changed` or `all`; commit mode defaults to `changed` | Chooses changed production Swift files or all source files. |
-| `test-scope` | `changed`, `matching`, `changed-and-matching`, or `all`; commit mode defaults to `changed-and-matching` | Chooses changed test files, `<SourceName>Tests.swift` matches, both, or the full test plan. |
+| `test-scope` | `changed`, `matching`, `changed-and-matching`, `affected-packages`, or `all`; commit mode defaults to `changed-and-matching` | Chooses changed or matching test files, affected package test targets, or the full test plan. |
 | `test-file-suffix` | One suffix per line; default `Tests.swift` | Changes the filename rule used for matching tests to source files. |
 | `mutation-source` | One relative path per line; blank means all discovered source | Limits mutation locations; matches repeatable `--mutation-source`. |
 | `test-file`, `test-suite`, `test-name` | One selector per line; blank means no filter | Adds matching tests from any target included in the chosen scheme. Selectors combine with target-wide selections; you do not need to name their targets separately. |

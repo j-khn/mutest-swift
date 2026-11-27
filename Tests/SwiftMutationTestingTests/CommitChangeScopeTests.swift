@@ -18,7 +18,7 @@ struct CommitChangeScopeTests {
         ])
         """
         try write(manifest, to: "Modules/Feature/Package.swift", in: repository)
-        try write(manifest.replacingOccurrences(of: "Feature", with: "Other"), to: "Modules/Other/Package.swift", in: repository)
+        try write(manifest.replacingOccurrences(of: "Feature", with: "Other").replacingOccurrences(of: "IntegrationTests", with: "OtherIntegrationTests"), to: "Modules/Other/Package.swift", in: repository)
         try write("let value = 1", to: "Modules/Feature/Sources/Feature/A.swift", in: repository)
         try write("let value = 1", to: "Modules/Other/Sources/Other/B.swift", in: repository)
         let base = try commit(repository, message: "base")
@@ -28,6 +28,9 @@ struct CommitChangeScopeTests {
         let packages = try CommitChangeScopeResolver.affectedPackages(projectRoot: repository, sourceFiles: selection.changedSourceFiles)
         #expect(packages == ["Modules/Feature"])
         #expect(try CommitChangeScopeResolver.packageTestTargets(projectRoot: repository, packages: packages) == ["FeatureTests", "IntegrationTests"])
+        let both = try CommitChangeScopeResolver.affectedPackages(projectRoot: repository, sourceFiles: ["Modules/Feature/Sources/Feature/A.swift", "Modules/Other/Sources/Other/B.swift"])
+        #expect(both == ["Modules/Feature", "Modules/Other"])
+        #expect(try CommitChangeScopeResolver.packageTestTargets(projectRoot: repository, packages: both) == ["FeatureTests", "IntegrationTests", "OtherIntegrationTests", "OtherTests"])
         #expect(throws: CommitScopeError.self) {
             try CommitChangeScopeResolver.affectedPackages(projectRoot: repository, sourceFiles: ["App/Screen.swift"])
         }
