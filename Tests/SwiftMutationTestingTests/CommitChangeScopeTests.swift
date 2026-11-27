@@ -4,6 +4,34 @@ import Testing
 
 @Suite("Commit-based source and test selection")
 struct CommitChangeScopeTests {
+    @Test("changed files select all test targets in affected packages only")
+    func affectedPackageTargets() throws {
+        let repository = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: repository) }
+        let manifest = """
+        // swift-tools-version: 6.0
+        import PackageDescription
+        let package = Package(name: "Example", targets: [
+            .target(name: "Feature"),
+            .testTarget(name: "FeatureTests", dependencies: ["Feature"]),
+            .testTarget(name: "IntegrationTests", dependencies: ["Feature"])
+        ])
+        """
+        try write(manifest, to: "Modules/Feature/Package.swift", in: repository)
+        try write(manifest.replacingOccurrences(of: "Feature", with: "Other"), to: "Modules/Other/Package.swift", in: repository)
+        try write("let value = 1", to: "Modules/Feature/Sources/Feature/A.swift", in: repository)
+        try write("let value = 1", to: "Modules/Other/Sources/Other/B.swift", in: repository)
+        let base = try commit(repository, message: "base")
+        try write("let value = 2", to: "Modules/Feature/Sources/Feature/A.swift", in: repository)
+        let head = try commit(repository, message: "change feature")
+        let selection = try CommitChangeScopeResolver.resolve(projectRoot: repository, sourceCommit: head, sourceBase: base, testFileSuffixes: [])
+        let packages = try CommitChangeScopeResolver.affectedPackages(projectRoot: repository, sourceFiles: selection.changedSourceFiles)
+        #expect(packages == ["Modules/Feature"])
+        #expect(try CommitChangeScopeResolver.packageTestTargets(projectRoot: repository, packages: packages) == ["FeatureTests", "IntegrationTests"])
+        #expect(throws: CommitScopeError.self) {
+            try CommitChangeScopeResolver.affectedPackages(projectRoot: repository, sourceFiles: ["App/Screen.swift"])
+        }
+    }
     @Test("selects changed source and test files, and finds matching test filenames")
     func changedAndMatchingFiles() throws {
         let repository = try makeRepository()

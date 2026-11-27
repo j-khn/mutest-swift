@@ -96,6 +96,8 @@ When test files belong to a local Swift package inside an Xcode project, `./run`
 
 Commit mode compares the checked-out commit with `--source-base` (or its first parent). A changed `Foo.swift` matches a tracked `FooTests.swift` anywhere in the project. Changed test files are also included by default. Use `--test-scope all` to keep the full test plan for ripple checks. Do not pass `--test-target` when you want only selected files; a target always adds every test in that target.
 
+Use `--test-scope affected-packages` with `--source-scope changed` to run all test targets declared by each changed source file's nearest Swift package. For Xcode, those targets must be in the scheme's test plan. Files outside a Swift package produce an error; select their Xcode test targets explicitly instead. A change with no production Swift files skips the mutation run.
+
 Examples:
 
 ```sh

@@ -174,7 +174,7 @@ enum SwiftMutationTestingCLI {
         let suffixes = arguments.all("--test-file-suffix")
 
         guard let sourceCommit, !sourceCommit.isEmpty else {
-            if sourceBase != nil || requestedSourceScope == "changed" || ["changed", "matching", "changed-and-matching"].contains(requestedTestScope ?? "") {
+            if sourceBase != nil || requestedSourceScope == "changed" || ["changed", "matching", "changed-and-matching", "affected-packages"].contains(requestedTestScope ?? "") {
                 throw CLIError.usage("Commit-based scopes require --source-commit. Set it to the commit being tested.")
             }
             if let scope = requestedSourceScope, scope != "all" { throw CLIError.usage("--source-scope must be 'all' or 'changed'.") }
@@ -187,8 +187,8 @@ enum SwiftMutationTestingCLI {
         guard ["all", "changed"].contains(sourceScope) else {
             throw CLIError.usage("--source-scope must be 'all' or 'changed'.")
         }
-        guard ["all", "changed", "matching", "changed-and-matching"].contains(testScope) else {
-            throw CLIError.usage("--test-scope must be all, changed, matching, or changed-and-matching.")
+        guard ["all", "changed", "matching", "changed-and-matching", "affected-packages"].contains(testScope) else {
+            throw CLIError.usage("--test-scope must be all, changed, matching, changed-and-matching, or affected-packages.")
         }
 
         let projectURL = URL(fileURLWithPath: configuration.project.path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
@@ -218,8 +218,25 @@ enum SwiftMutationTestingCLI {
             sourceFiles = configuration.source
         }
 
+        if sourceScope == "changed" && sourceFiles.isEmpty {
+            cliLog("No changed production Swift files are in scope; skipping mutation testing.")
+            return true
+        }
+
+        if testScope == "affected-packages" {
+            guard sourceScope == "changed" else {
+                throw CLIError.usage("--test-scope affected-packages requires --source-scope changed.")
+            }
+            let packages = try CommitChangeScopeResolver.affectedPackages(projectRoot: projectRoot, sourceFiles: sourceFiles)
+            let targets = try CommitChangeScopeResolver.packageTestTargets(projectRoot: projectRoot, packages: packages)
+            configuration.project.testPackageRoots = Array(Set(configuration.project.testPackageRoots + packages)).sorted()
+            if configuration.project.kind != .swiftPackage {
+                configuration.project.testTargets = Array(Set(configuration.project.testTargets + targets)).sorted()
+            }
+            cliLog("Affected packages: \(packages.joined(separator: ", ")); test targets: \(targets.joined(separator: ", ")).")
+        }
         let selectedTestFiles = selection.testFiles(for: testScope)
-        if testScope != "all" {
+        if testScope != "all" && testScope != "affected-packages" {
             configuration.tests.files = Array(Set(configuration.tests.files + selectedTestFiles)).sorted()
             configuration.project.testPackageRoots = Array(Set(configuration.project.testPackageRoots + selection.testPackageRoots)).sorted()
             if !(sourceScope == "changed" && sourceFiles.isEmpty)
@@ -230,7 +247,7 @@ enum SwiftMutationTestingCLI {
 
         cliLog("Commit scope: \(selection.baseCommit.prefix(12))..\(selection.headCommit.prefix(12)); \(selection.changedSourceFiles.count) changed source files, \(selection.changedTestFiles.count) changed test files, \(selection.matchingTestFiles.count) matching test files.")
         let sourceDescription = sourceScope == "all" ? "all discovered source files" : "\(sourceFiles.count) changed source files"
-        let testDescription = testScope == "all" ? "full configured test plan" : "\(selectedTestFiles.count) selected test files"
+        let testDescription = testScope == "all" ? "full configured test plan" : (testScope == "affected-packages" ? "affected package test targets" : "\(selectedTestFiles.count) selected test files")
         cliLog("Selected scope: \(sourceDescription); \(testDescription)\(configuration.project.testPackageRoots.isEmpty ? "" : "; package roots: \(configuration.project.testPackageRoots.joined(separator: ", "))").")
 
         if sourceScope == "changed" && sourceFiles.isEmpty {

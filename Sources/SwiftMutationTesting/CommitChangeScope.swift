@@ -28,6 +28,36 @@ public enum CommitScopeError: Error, CustomStringConvertible {
 }
 
 public enum CommitChangeScopeResolver {
+    /// Resolve the nearest package for each changed source; never silently widen or skip scope.
+    public static func affectedPackages(projectRoot: URL, sourceFiles: [String]) throws -> [String] {
+        let root = projectRoot.standardizedFileURL.resolvingSymlinksInPath()
+        var packages = Set<String>()
+        for file in sourceFiles {
+            guard let package = packageRoot(containing: file, projectRoot: root) else {
+                throw CommitScopeError.usage("Changed source is not inside a Swift package: \(file). Select test targets explicitly for this source.")
+            }
+            packages.insert(package)
+        }
+        return packages.sorted()
+    }
+
+    /// Get all test targets declared by a package manifest, including custom paths.
+    public static func packageTestTargets(projectRoot: URL, packages: [String]) throws -> [String] {
+        var result = Set<String>()
+        for package in packages {
+            let directory = URL(fileURLWithPath: package, relativeTo: projectRoot).standardizedFileURL
+            let output = try command(["swift", "package", "dump-package"], at: directory)
+            guard let data = output.data(using: .utf8),
+                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let targets = object["targets"] as? [[String: Any]] else {
+                throw CommitScopeError.usage("Could not read test targets for package \(package).")
+            }
+            let names = targets.filter { $0["type"] as? String == "test" }.compactMap { $0["name"] as? String }
+            guard !names.isEmpty else { throw CommitScopeError.usage("Package \(package) declares no test targets.") }
+            result.formUnion(names)
+        }
+        return result.sorted()
+    }
     public static func resolve(projectRoot: URL, sourceCommit: String, sourceBase: String?, testFileSuffixes: [String]) throws -> CommitChangeSelection {
         let projectRoot = projectRoot.standardizedFileURL.resolvingSymlinksInPath()
         let repositoryRoot = URL(fileURLWithPath: try git(["rev-parse", "--show-toplevel"], at: projectRoot), isDirectory: true)
@@ -127,6 +157,24 @@ public enum CommitChangeScopeResolver {
             throw CommitScopeError.usage("Git command failed (\(process.terminationStatus)): \(detail)")
         }
         return output
+    }
+
+    private static func command(_ arguments: [String], at directory: URL) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = arguments
+        process.currentDirectoryURL = directory
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        try? output.fileHandleForWriting.close()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw CommitScopeError.usage("Could not inspect package at \(directory.path): \(String(decoding: data, as: UTF8.self))")
+        }
+        return String(decoding: data, as: UTF8.self)
     }
 
     private static func decodePaths(_ data: Data) -> [String] {

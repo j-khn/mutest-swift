@@ -42,7 +42,7 @@ inputs:
     required: false
     default: ""
   test-scope:
-    description: all, changed, matching, or changed-and-matching; blank defaults to changed-and-matching when source-commit is set
+    description: all, changed, matching, changed-and-matching, or affected-packages; blank defaults to changed-and-matching when source-commit is set
     required: false
     default: ""
   test-file-suffix:
