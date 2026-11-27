@@ -347,7 +347,7 @@ public struct MutationReport: Codable, Sendable {
         }
     }
 
-    public init(runId: String = UUID().uuidString, engine: EngineIdentity = .init(name: "mutest-swift", version: "0.3.7", tierPolicy: "all operators experimental pending campaign"), scope: Scope, mutants: [MutantRecord], integrityWarnings: [IntegrityWarning] = [], qualityGate: QualityGateResult? = nil, timings: MutationTimings? = nil) {
+    public init(runId: String = UUID().uuidString, engine: EngineIdentity = .init(name: "mutest-swift", version: "0.3.8", tierPolicy: "all operators experimental pending campaign"), scope: Scope, mutants: [MutantRecord], integrityWarnings: [IntegrityWarning] = [], qualityGate: QualityGateResult? = nil, timings: MutationTimings? = nil) {
         self.runId = runId; self.engine = engine; self.scope = scope; self.mutants = mutants
         self.summary = MutationSummary(records: mutants); self.integrityWarnings = integrityWarnings; self.qualityGate = qualityGate; self.timings = timings
     }

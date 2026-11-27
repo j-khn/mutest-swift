@@ -1183,7 +1183,7 @@ public struct MutationEngine: Sendable {
             content.append(0)
             content.append(contentsOf: (environment[key] ?? "").utf8)
         }
-        content.append(contentsOf: "\u{0}0.3.7-xcode-workers-v6\u{0}\(runtimeFingerprint)\u{0}mutest-swift-cache-v6".utf8)
+        content.append(contentsOf: "\u{0}0.3.8-xcode-workers-v7\u{0}\(runtimeFingerprint)\u{0}mutest-swift-cache-v7".utf8)
         return SHA256Digest.hash(content)
     }
 

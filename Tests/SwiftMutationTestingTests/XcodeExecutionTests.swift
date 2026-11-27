@@ -14,8 +14,10 @@ private final class FakeXcode: @unchecked Sendable {
     private(set) var initialBuildSawBoot = false
     private(set) var maximumActiveBuilds = 0
     private var activeBuilds = 0
+    private var didFailSwiftFormatBuild = false
     let failSchema: Bool
     let failOriginalBuild: Bool
+    let failFirstBuildWithSwiftFormatTimeout: Bool
     let timeoutFirstAttempt: Bool
     let mismatchBaseline: Bool
     let failInitialSchemaOnly: Bool
@@ -25,9 +27,10 @@ private final class FakeXcode: @unchecked Sendable {
     init(failSchema: Bool = false, failOriginalBuild: Bool = false, timeoutFirstAttempt: Bool = false,
          mismatchBaseline: Bool = false, failInitialSchemaOnly: Bool = false,
          failInactiveSchemaBaseline: Bool = false, failOriginalRecheck: Bool = false,
-         failWithoutActivation: Bool = false) {
+         failWithoutActivation: Bool = false, failFirstBuildWithSwiftFormatTimeout: Bool = false) {
         self.failSchema = failSchema; self.timeoutFirstAttempt = timeoutFirstAttempt; self.mismatchBaseline = mismatchBaseline
         self.failOriginalBuild = failOriginalBuild
+        self.failFirstBuildWithSwiftFormatTimeout = failFirstBuildWithSwiftFormatTimeout
         self.failInitialSchemaOnly = failInitialSchemaOnly
         self.failInactiveSchemaBaseline = failInactiveSchemaBaseline
         self.failOriginalRecheck = failOriginalRecheck
@@ -39,9 +42,12 @@ private final class FakeXcode: @unchecked Sendable {
         func argument(_ option: String) -> String { command.arguments.firstIndex(of: option).map { command.arguments[$0 + 1] } ?? "" }
         var output = "", exit: Int32 = 0, timeout = false
         if command.arguments.contains("build-for-testing") {
-            let initial = command.outputFile.lastPathComponent == "baseline-build.log"
+            let initial = command.outputFile.lastPathComponent.hasPrefix("baseline-build")
             let hasBooted = simulators.snapshot().commands.contains { $0.first == "boot" }
+            var shouldFailSwiftFormat = false
             lock.lock()
+            shouldFailSwiftFormat = failFirstBuildWithSwiftFormatTimeout && !didFailSwiftFormatBuild
+            if shouldFailSwiftFormat { didFailSwiftFormatBuild = true }
             builds.append(command)
             initialBuildSawBoot = initialBuildSawBoot || (initial && hasBooted)
             activeBuilds += 1; maximumActiveBuilds = max(maximumActiveBuilds, activeBuilds)
@@ -54,7 +60,10 @@ private final class FakeXcode: @unchecked Sendable {
                 lock.unlock()
             }
             Thread.sleep(forTimeInterval: 0.01)
-            if failOriginalBuild || (failSchema && command.outputFile.lastPathComponent.hasPrefix("schema-"))
+            if shouldFailSwiftFormat {
+                output = "error: duplicateImports rule timed out in /fixture/ShareNetworkingTests.swift.\n"
+                exit = 65
+            } else if failOriginalBuild || (failSchema && command.outputFile.lastPathComponent.hasPrefix("schema-"))
                 || (failInitialSchemaOnly && command.outputFile.lastPathComponent == "schema-build.log") { exit = 65 }
             else {
                 let products = URL(fileURLWithPath: argument("-derivedDataPath")).appendingPathComponent("Build/Products")
@@ -180,6 +189,34 @@ struct XcodeExecutionTests {
             let index = try #require(command.arguments.firstIndex(of: "-derivedDataPath"))
             #expect(!FileManager.default.fileExists(atPath: command.arguments[index + 1]))
         }
+    }
+
+    @Test("SwiftFormat rule timeouts retry once with one job and the same DerivedData")
+    func swiftFormatTimeoutRetriesSerially() throws {
+        let fake = FakeXcode(failFirstBuildWithSwiftFormatTimeout: true)
+        _ = try campaign(fake, workers: 1)
+
+        #expect(fake.builds.count >= 2)
+        let first = fake.builds[0]
+        let retry = fake.builds[1]
+        #expect(first.outputFile.lastPathComponent == "baseline-build.log")
+        #expect(retry.outputFile.lastPathComponent == "baseline-build-swiftformat-retry.log")
+        let firstJobs = try #require(first.arguments.firstIndex(of: "-jobs"))
+        let retryJobs = try #require(retry.arguments.firstIndex(of: "-jobs"))
+        #expect(first.arguments[first.arguments.index(after: firstJobs)] == "2")
+        #expect(retry.arguments[retry.arguments.index(after: retryJobs)] == "1")
+        let firstDerivedData = try #require(first.arguments.firstIndex(of: "-derivedDataPath"))
+        let retryDerivedData = try #require(retry.arguments.firstIndex(of: "-derivedDataPath"))
+        #expect(first.arguments[first.arguments.index(after: firstDerivedData)] == retry.arguments[retry.arguments.index(after: retryDerivedData)])
+        #expect(fake.builds.filter { $0.outputFile.lastPathComponent.hasSuffix("-swiftformat-retry.log") }.count == 1)
+        let reportErrors = """
+        error: duplicateImports rule timed out in ShareNetworkingTests.swift.
+        error: extensionAccessControl rule timed out in WebSocketMessageDecoderUnitTest.swift.
+        error: modifiersOnSameLine rule timed out in WebSocketMessageEncoderUnitTest.swift.
+        error: redundantExtensionACL rule timed out in WebSocketChannelUnitTest.swift.
+        """
+        #expect(XcodeMutationExecutor.failedOnlyOnSwiftFormatTimeouts(reportErrors))
+        #expect(!XcodeMutationExecutor.failedOnlyOnSwiftFormatTimeouts("error: compiler failed\nerror: duplicateImports rule timed out in File.swift"))
     }
 
     @Test("different baseline counts abort before any mutant runs and clean both workers")
