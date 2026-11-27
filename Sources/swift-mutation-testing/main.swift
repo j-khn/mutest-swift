@@ -27,31 +27,36 @@ enum SwiftMutationTestingCLI {
         do {
             let arguments = try parse(Array(CommandLine.arguments.dropFirst()))
             if arguments.command == "help" || arguments.flags.contains("--help") || arguments.flags.contains("-h") { print(help); return }
-            if arguments.command == "version" { print("mutest-swift 0.3.1"); return }
+            if arguments.command == "version" { print("mutest-swift 0.3.7"); return }
             if arguments.command == "validate" {
                 var configuration = try makeConfiguration(arguments)
                 _ = try applyCommitScope(arguments, to: &configuration)
                 _ = try xcodebuildArguments(arguments, projectKind: configuration.project.kind)
+                _ = try xcodePackageOptions(arguments, projectKind: configuration.project.kind)
                 try validate(configuration)
                 print("Configuration valid. Project: \(configuration.project.kind.rawValue) at \(configuration.project.path)")
                 return
             }
             guard arguments.command == "run" else { throw CLIError.usage("Expected command 'run', 'validate', 'version', or 'help'.\n\n\(help)") }
             var configuration = try makeConfiguration(arguments)
-            if try applyCommitScope(arguments, to: &configuration) { return }
-            let buildSettings = try xcodebuildArguments(arguments, projectKind: configuration.project.kind)
             let output = arguments.first("--output").map { URL(fileURLWithPath: $0, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL }
+            if let skipReason = try applyCommitScope(arguments, to: &configuration) {
+                let reportDirectory = resolvedReportDirectory(configuration: configuration, explicitOutput: output)
+                try writeSkipReport(skipReason, to: reportDirectory)
+                cliLog(skipReason)
+                print("Reports: \(reportDirectory.path)")
+                return
+            }
+            let buildSettings = try xcodebuildArguments(arguments, projectKind: configuration.project.kind)
+            let packageOptions = try xcodePackageOptions(arguments, projectKind: configuration.project.kind)
             let runStartedAt = Date()
-            let report = try MutationEngine(xcodebuildArguments: buildSettings).run(configuration: configuration, outputDirectory: output)
+            let report = try MutationEngine(xcodebuildArguments: buildSettings, xcodePackageOptions: packageOptions).run(configuration: configuration, outputDirectory: output)
             let runDuration = Date().timeIntervalSince(runStartedAt)
             let score = report.summary.score.map { String(format: "%.1f%%", $0 * 100) } ?? "n/a"
             print("Mutation score: \(score) · killed \(report.summary.killed) · survived \(report.summary.survived) · no coverage \(report.summary.noCoverage) · timeout \(report.summary.timedOut) · unbuildable \(report.summary.unbuildable)")
             let timestamp = localTimestamp()
             print("[\(timestamp)][mutest-swift] Complete: \(report.summary.generated) mutants across \(report.scope.sources.count) source files in \(formatDuration(runDuration)).")
-            let projectURL = URL(fileURLWithPath: configuration.project.path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
-            let projectRoot = configuration.project.kind == .swiftPackage ? projectURL : projectURL.deletingLastPathComponent()
-            let configuredOutput = configuration.output.directory.map { URL(fileURLWithPath: $0, relativeTo: projectRoot).standardizedFileURL }
-            let reportDirectory = output ?? configuredOutput ?? projectRoot.appendingPathComponent(".swift-mutation-testing")
+            let reportDirectory = resolvedReportDirectory(configuration: configuration, explicitOutput: output)
             print("Reports: \(reportDirectory.path)")
             if let gate = report.qualityGate, !gate.passed {
                 for failure in gate.failures { FileHandle.standardError.write(Data("Quality gate: \(failure)\n".utf8)) }
@@ -71,7 +76,7 @@ enum SwiftMutationTestingCLI {
             "--config", "--project", "--project-kind", "--mutation-source", "--source", "--test-file", "--target-file",
             "--test-suite", "--suite", "--test-name", "--target-tests", "--test", "--scheme", "--test-target", "--target", "--test-package-root",
             "--source-commit", "--source-base", "--source-scope", "--test-scope", "--test-file-suffix",
-            "--destination", "--destination-simulator", "--xcodebuild-arg", "--operators", "--operator-tier", "--build-timeout",
+            "--destination", "--destination-simulator", "--xcodebuild-arg", "--cloned-source-packages-dir", "--package-cache-path", "--operators", "--operator-tier", "--build-timeout",
             "--baseline-timeout", "--mutant-timeout", "--parallelism", "--workers", "--output", "--cache-path", "--minimum-score",
             "--maximum-score-drop", "--maximum-integrity-warnings", "--baseline-report"
         ]
@@ -85,7 +90,7 @@ enum SwiftMutationTestingCLI {
             "--destination-simulator": "--destination",
             "--workers": "--parallelism",
         ]
-        let flagOptions: Set<String> = ["--no-resume", "--no-cache", "--no-suppressions", "--require-suppression-reason", "--fail-on-new-survivors", "--help", "-h"]
+        let flagOptions: Set<String> = ["--no-resume", "--no-cache", "--no-suppressions", "--require-suppression-reason", "--fail-on-new-survivors", "--skip-package-resolution", "--help", "-h"]
         var index = 1
         while index < arguments.count {
             let option = arguments[index]
@@ -164,9 +169,23 @@ enum SwiftMutationTestingCLI {
         return config
     }
 
+    static func resolvedReportDirectory(configuration: RunConfiguration, explicitOutput: URL?) -> URL {
+        let projectURL = URL(fileURLWithPath: configuration.project.path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
+        let projectRoot = configuration.project.kind == .swiftPackage ? projectURL : projectURL.deletingLastPathComponent()
+        let configuredOutput = configuration.output.directory.map { URL(fileURLWithPath: $0, relativeTo: projectRoot).standardizedFileURL }
+        return explicitOutput ?? configuredOutput ?? projectRoot.appendingPathComponent(".swift-mutation-testing")
+    }
+
+    static func writeSkipReport(_ reason: String, to reportDirectory: URL) throws {
+        try FileManager.default.createDirectory(at: reportDirectory, withIntermediateDirectories: true)
+        let report = "# Mutation testing skipped\n\n\(reason)\n"
+        try report.write(to: reportDirectory.appendingPathComponent("report.md"), atomically: true, encoding: .utf8)
+        try? FileManager.default.removeItem(at: reportDirectory.appendingPathComponent("report.json"))
+    }
+
     /// Resolves Git commit paths before the engine starts. Commit-based selection is opt-in;
     /// without --source-commit the existing full-scope defaults remain unchanged.
-    static func applyCommitScope(_ arguments: Arguments, to configuration: inout RunConfiguration) throws -> Bool {
+    static func applyCommitScope(_ arguments: Arguments, to configuration: inout RunConfiguration) throws -> String? {
         let sourceCommit = arguments.first("--source-commit")
         let sourceBase = arguments.first("--source-base")
         let requestedSourceScope = arguments.first("--source-scope")
@@ -174,12 +193,12 @@ enum SwiftMutationTestingCLI {
         let suffixes = arguments.all("--test-file-suffix")
 
         guard let sourceCommit, !sourceCommit.isEmpty else {
-            if sourceBase != nil || requestedSourceScope == "changed" || ["changed", "matching", "changed-and-matching"].contains(requestedTestScope ?? "") {
+            if sourceBase != nil || requestedSourceScope == "changed" || ["changed", "matching", "changed-and-matching", "affected-packages"].contains(requestedTestScope ?? "") {
                 throw CLIError.usage("Commit-based scopes require --source-commit. Set it to the commit being tested.")
             }
             if let scope = requestedSourceScope, scope != "all" { throw CLIError.usage("--source-scope must be 'all' or 'changed'.") }
             if let scope = requestedTestScope, scope != "all" { throw CLIError.usage("--test-scope must be all, changed, matching, or changed-and-matching.") }
-            return false
+            return nil
         }
 
         let sourceScope = requestedSourceScope ?? "changed"
@@ -187,8 +206,8 @@ enum SwiftMutationTestingCLI {
         guard ["all", "changed"].contains(sourceScope) else {
             throw CLIError.usage("--source-scope must be 'all' or 'changed'.")
         }
-        guard ["all", "changed", "matching", "changed-and-matching"].contains(testScope) else {
-            throw CLIError.usage("--test-scope must be all, changed, matching, or changed-and-matching.")
+        guard ["all", "changed", "matching", "changed-and-matching", "affected-packages"].contains(testScope) else {
+            throw CLIError.usage("--test-scope must be all, changed, matching, changed-and-matching, or affected-packages.")
         }
 
         let projectURL = URL(fileURLWithPath: configuration.project.path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
@@ -218,26 +237,38 @@ enum SwiftMutationTestingCLI {
             sourceFiles = configuration.source
         }
 
+        if sourceScope == "changed" && sourceFiles.isEmpty {
+            return "Mutation testing skipped: no changed production Swift files were found in the requested commit range."
+        }
+
+        if testScope == "affected-packages" {
+            guard sourceScope == "changed" else {
+                throw CLIError.usage("--test-scope affected-packages requires --source-scope changed.")
+            }
+            let packages = try CommitChangeScopeResolver.affectedPackages(projectRoot: projectRoot, sourceFiles: sourceFiles)
+            let targets = try CommitChangeScopeResolver.packageTestTargets(projectRoot: projectRoot, packages: packages)
+            configuration.project.testPackageRoots = Array(Set(configuration.project.testPackageRoots + packages)).sorted()
+            if configuration.project.kind != .swiftPackage {
+                configuration.project.testTargets = Array(Set(configuration.project.testTargets + targets)).sorted()
+            }
+            cliLog("Affected packages: \(packages.joined(separator: ", ")); test targets: \(targets.joined(separator: ", ")).")
+        }
         let selectedTestFiles = selection.testFiles(for: testScope)
-        if testScope != "all" {
+        let hasExplicitTestSelection = !configuration.tests.isEmpty || !configuration.project.testTargets.isEmpty
+        if testScope != "all" && testScope != "affected-packages" {
             configuration.tests.files = Array(Set(configuration.tests.files + selectedTestFiles)).sorted()
             configuration.project.testPackageRoots = Array(Set(configuration.project.testPackageRoots + selection.testPackageRoots)).sorted()
-            if !(sourceScope == "changed" && sourceFiles.isEmpty)
-                && selectedTestFiles.isEmpty && configuration.tests.isEmpty && configuration.project.testTargets.isEmpty {
-                throw CLIError.usage("No test files were selected from the commit range. Use --test-scope all, pass a test selector, or choose a full --test-target.")
+            if let reason = selection.noTestFilesSkipReason(for: testScope, hasExplicitTestSelection: hasExplicitTestSelection) {
+                return reason
             }
         }
 
         cliLog("Commit scope: \(selection.baseCommit.prefix(12))..\(selection.headCommit.prefix(12)); \(selection.changedSourceFiles.count) changed source files, \(selection.changedTestFiles.count) changed test files, \(selection.matchingTestFiles.count) matching test files.")
         let sourceDescription = sourceScope == "all" ? "all discovered source files" : "\(sourceFiles.count) changed source files"
-        let testDescription = testScope == "all" ? "full configured test plan" : "\(selectedTestFiles.count) selected test files"
+        let testDescription = testScope == "all" ? "full configured test plan" : (testScope == "affected-packages" ? "affected package test targets" : "\(selectedTestFiles.count) selected test files")
         cliLog("Selected scope: \(sourceDescription); \(testDescription)\(configuration.project.testPackageRoots.isEmpty ? "" : "; package roots: \(configuration.project.testPackageRoots.joined(separator: ", "))").")
 
-        if sourceScope == "changed" && sourceFiles.isEmpty {
-            cliLog("No changed production Swift files are in scope; skipping mutation testing.")
-            return true
-        }
-        return false
+        return nil
     }
 
     static func validate(_ configuration: RunConfiguration) throws {
@@ -267,6 +298,27 @@ enum SwiftMutationTestingCLI {
             throw CLIError.usage("Each --xcodebuild-arg must be a build setting in NAME=VALUE form.")
         }
         return values
+    }
+
+    static func xcodePackageOptions(_ arguments: Arguments, projectKind: ProjectKind) throws -> XcodePackageOptions {
+        func directoryOption(_ name: String) throws -> URL? {
+            guard let path = arguments.first(name) else { return nil }
+            guard !path.isEmpty else { throw CLIError.usage("\(name) requires a non-empty directory path.") }
+            return URL(fileURLWithPath: path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
+        }
+        let options = XcodePackageOptions(
+            clonedSourcePackagesDirectory: try directoryOption("--cloned-source-packages-dir"),
+            packageCachePath: try directoryOption("--package-cache-path"),
+            skipResolution: arguments.flags.contains("--skip-package-resolution")
+        )
+        do {
+            try options.validate(for: projectKind)
+        } catch ContractError.invalidConfiguration(let message) {
+            throw CLIError.usage(message)
+        } catch {
+            throw CLIError.usage("Invalid Xcode package options: \(error)")
+        }
+        return options
     }
 
     static func integer(_ text: String, name: String) throws -> Int {
@@ -306,7 +358,7 @@ enum SwiftMutationTestingCLI {
     }
 
     static let help = """
-    mutest-swift 0.3.1
+    mutest-swift 0.3.7
 
     Usage:
       swift-mutation-testing run [options]
@@ -321,11 +373,14 @@ enum SwiftMutationTestingCLI {
       --source-commit COMMIT         Commit or ref to analyze; must match the checked-out commit
       --source-base COMMIT           Compare from this commit or ref (default: source commit's parent)
       --source-scope SCOPE           all | changed (commit mode defaults to changed)
-      --test-scope SCOPE              all | changed | matching | changed-and-matching
+      --test-scope SCOPE              all | changed | matching | changed-and-matching | affected-packages
                                       commit mode defaults to changed-and-matching
       --test-file-suffix SUFFIX       Filename suffix after a changed source name (default: Tests.swift); repeatable
       --destination-simulator VALUE  iOS Simulator for Xcode tests, e.g. platform=iOS Simulator,name=iPhone 17,OS=latest
       --xcodebuild-arg NAME=VALUE    Xcode build setting; repeatable
+      --cloned-source-packages-dir PATH  Use an existing Xcode SourcePackages directory
+      --package-cache-path PATH     Use an existing Xcode Swift package cache
+      --skip-package-resolution     Skip resolution and prevent automatic fetches during project builds
 
     Code to mutate:
       --mutation-source PATH         Production Swift file/folder; repeat once per path

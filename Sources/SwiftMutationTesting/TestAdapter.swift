@@ -316,6 +316,58 @@ public struct XcodeTestExecutionContext: Sendable {
     }
 }
 
+public struct XcodePackageOptions: Sendable, Equatable {
+    public var clonedSourcePackagesDirectory: URL?
+    public var packageCachePath: URL?
+    public var skipResolution: Bool
+
+    public init(clonedSourcePackagesDirectory: URL? = nil, packageCachePath: URL? = nil, skipResolution: Bool = false) {
+        self.clonedSourcePackagesDirectory = clonedSourcePackagesDirectory
+        self.packageCachePath = packageCachePath
+        self.skipResolution = skipResolution
+    }
+
+    public var shouldResolveDependencies: Bool { !skipResolution }
+
+    public func validate(for projectKind: ProjectKind) throws {
+        let usesXcodeOptions = clonedSourcePackagesDirectory != nil || packageCachePath != nil || skipResolution
+        guard projectKind != .swiftPackage || !usesXcodeOptions else {
+            throw ContractError.invalidConfiguration("Xcode package cache options can only be used with Xcode projects or workspaces.")
+        }
+        if let clonedSourcePackagesDirectory {
+            try Self.requireDirectoryWhenPresent(clonedSourcePackagesDirectory, option: "--cloned-source-packages-dir", required: skipResolution)
+        }
+        if skipResolution && clonedSourcePackagesDirectory == nil {
+            throw ContractError.invalidConfiguration("--skip-package-resolution requires --cloned-source-packages-dir.")
+        }
+        if let packageCachePath {
+            try Self.requireDirectoryWhenPresent(packageCachePath, option: "--package-cache-path", required: true)
+        }
+    }
+
+    func commandLineArguments(defaultClonedSourcePackagesDirectory: URL?, resolvingDependencies: Bool) -> [String] {
+        var arguments: [String] = []
+        if let directory = clonedSourcePackagesDirectory ?? defaultClonedSourcePackagesDirectory {
+            arguments += ["-clonedSourcePackagesDirPath", directory.path]
+        }
+        if let packageCachePath {
+            arguments += ["-packageCachePath", packageCachePath.path]
+        }
+        if skipResolution && !resolvingDependencies {
+            arguments.append("-disableAutomaticPackageResolution")
+        }
+        return arguments
+    }
+
+    private static func requireDirectoryWhenPresent(_ url: URL, option: String, required: Bool) throws {
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        guard (exists && isDirectory.boolValue) || (!exists && !required) else {
+            throw ContractError.invalidConfiguration("\(option) must point to an existing directory: \(url.path)")
+        }
+    }
+}
+
 enum XcodeSimulatorBuildSettings {
     static func defaults(for arguments: [String], destination: String?) -> [String] {
         guard destination?.localizedCaseInsensitiveContains("simulator") == true else { return [] }
@@ -343,9 +395,11 @@ public struct NativeTestAdapter: Sendable {
     public var project: ProjectConfiguration
     public var selection: TestSelection
     public var xcodebuildArguments: [String]
+    public var xcodePackageOptions: XcodePackageOptions
     public var xcodeDerivedDataPath: URL?
-    public init(project: ProjectConfiguration, selection: TestSelection, xcodebuildArguments: [String] = [], xcodeDerivedDataPath: URL? = nil) {
+    public init(project: ProjectConfiguration, selection: TestSelection, xcodebuildArguments: [String] = [], xcodePackageOptions: XcodePackageOptions = .init(), xcodeDerivedDataPath: URL? = nil) {
         self.project = project; self.selection = selection; self.xcodebuildArguments = xcodebuildArguments
+        self.xcodePackageOptions = xcodePackageOptions
         self.xcodeDerivedDataPath = xcodeDerivedDataPath
     }
 
@@ -375,6 +429,9 @@ public struct NativeTestAdapter: Sendable {
             return .init(executable: "/usr/bin/env", arguments: ["swift"] + finalArgs, workingDirectory: root, environment: environment, timeout: timeout, outputFile: output, stopOnActivatedTestFailure: stopOnActivatedTestFailure, activationID: activationID, activationFile: activationFile)
         case .xcodeProject, .xcodeWorkspace:
             guard let scheme = project.scheme, !scheme.isEmpty else { throw ContractError.invalidConfiguration("Xcode projects and workspaces require --scheme.") }
+            if phase == .resolveDependencies && xcodePackageOptions.skipResolution {
+                throw ContractError.invalidConfiguration("Xcode package resolution was requested while --skip-package-resolution is enabled.")
+            }
             let projectPath = root.appendingPathComponent(project.path).path
             let action: String
             switch phase {
@@ -387,9 +444,9 @@ public struct NativeTestAdapter: Sendable {
             if phase == .resolveDependencies {
                 args += project.kind == .xcodeWorkspace ? ["-workspace", projectPath] : ["-project", projectPath]
                 args += ["-scheme", scheme]
-                if let derivedDataPath = xcodeContext?.derivedDataPath ?? xcodeDerivedDataPath {
-                    args += ["-clonedSourcePackagesDirPath", derivedDataPath.appendingPathComponent("SourcePackages", isDirectory: true).path]
-                }
+                let derivedDataPath = xcodeContext?.derivedDataPath ?? xcodeDerivedDataPath
+                let defaultPackagesPath = derivedDataPath?.appendingPathComponent("SourcePackages", isDirectory: true)
+                args += xcodePackageOptions.commandLineArguments(defaultClonedSourcePackagesDirectory: defaultPackagesPath, resolvingDependencies: true)
                 return .init(executable: "/usr/bin/xcrun", arguments: args, workingDirectory: root, environment: environment, timeout: timeout, outputFile: output)
             }
             let destination = xcodeContext?.destination ?? project.destination
@@ -402,6 +459,7 @@ public struct NativeTestAdapter: Sendable {
             } else {
                 args += project.kind == .xcodeWorkspace ? ["-workspace", projectPath] : ["-project", projectPath]
                 args += ["-scheme", scheme]
+                args += xcodePackageOptions.commandLineArguments(defaultClonedSourcePackagesDirectory: nil, resolvingDependencies: false)
                 args += xcodebuildArguments
                 args += XcodeSimulatorBuildSettings.defaults(for: xcodebuildArguments, destination: destination)
             }

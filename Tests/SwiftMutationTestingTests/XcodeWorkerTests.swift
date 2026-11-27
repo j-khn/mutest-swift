@@ -107,10 +107,79 @@ struct XcodeWorkerTests {
         #expect(!workspace.derivedData.path.hasPrefix(root.path + "/"))
         #expect(workspace.isolatedDerivedData(worker: 1) != workspace.isolatedDerivedData(worker: 2))
     }
+
+    @Test("Xcode package paths are reused and automatic resolution can be disabled")
+    func preResolvedPackages() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let checkouts = root.appendingPathComponent("swiftpm", isDirectory: true)
+        let packageCache = root.appendingPathComponent("swiftpm_cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkouts, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: packageCache, withIntermediateDirectories: true)
+        let options = XcodePackageOptions(
+            clonedSourcePackagesDirectory: checkouts,
+            packageCachePath: packageCache,
+            skipResolution: true
+        )
+        try options.validate(for: .xcodeProject)
+        #expect(!options.shouldResolveDependencies)
+
+        let project = ProjectConfiguration(kind: .xcodeProject, path: "Fixture.xcodeproj", scheme: "Fixture", testTarget: "FixtureTests")
+        let context = XcodeTestExecutionContext(destination: "platform=iOS Simulator,id=owned", derivedDataPath: root.appendingPathComponent("DerivedData"))
+        let selection = ResolvedTestSelection(identifiers: [], allTests: true)
+        #expect(XcodePackageOptions().shouldResolveDependencies)
+
+        let resolvingOptions = XcodePackageOptions(clonedSourcePackagesDirectory: checkouts, packageCachePath: packageCache)
+        let resolvingAdapter = NativeTestAdapter(project: project, selection: .init(), xcodePackageOptions: resolvingOptions)
+        let resolve = try resolvingAdapter.command(root: root, phase: .resolveDependencies, resolved: selection, environment: [:], timeout: 30, output: root.appendingPathComponent("resolve.log"), xcodeContext: context)
+        #expect(resolvingOptions.shouldResolveDependencies)
+        #expect(resolve.arguments.contains("-resolvePackageDependencies"))
+        #expect(try argumentValue("-clonedSourcePackagesDirPath", in: resolve.arguments) == checkouts.path)
+        #expect(try argumentValue("-packageCachePath", in: resolve.arguments) == packageCache.path)
+
+        let adapter = NativeTestAdapter(project: project, selection: .init(), xcodePackageOptions: options)
+        #expect(throws: ContractError.self) {
+            _ = try adapter.command(root: root, phase: .resolveDependencies, resolved: selection, environment: [:], timeout: 30, output: root.appendingPathComponent("skipped-resolve.log"), xcodeContext: context)
+        }
+
+        for phase in [TestPhase.buildForTesting, .baseline] {
+            let command = try adapter.command(root: root, phase: phase, resolved: selection, environment: [:], timeout: 30, output: root.appendingPathComponent("\(phase).log"), xcodeContext: context)
+            #expect(try argumentValue("-clonedSourcePackagesDirPath", in: command.arguments) == checkouts.path)
+            #expect(try argumentValue("-packageCachePath", in: command.arguments) == packageCache.path)
+            #expect(command.arguments.contains("-disableAutomaticPackageResolution"))
+        }
+    }
+
+    @Test("skipping Xcode package resolution reports missing or invalid cache paths")
+    func preResolvedPackageValidation() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let missing = root.appendingPathComponent("missing", isDirectory: true)
+        let file = root.appendingPathComponent("not-a-directory")
+        try Data().write(to: file)
+        #expect(throws: ContractError.self) {
+            try XcodePackageOptions(skipResolution: true).validate(for: .xcodeProject)
+        }
+        #expect(throws: ContractError.self) {
+            try XcodePackageOptions(clonedSourcePackagesDirectory: missing, skipResolution: true).validate(for: .xcodeProject)
+        }
+        #expect(throws: ContractError.self) {
+            try XcodePackageOptions(packageCachePath: file).validate(for: .xcodeProject)
+        }
+        #expect(throws: ContractError.self) {
+            try XcodePackageOptions(skipResolution: true).validate(for: .swiftPackage)
+        }
+    }
+
     private func temporaryDirectory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("Xcode workers \(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
+    }
+    private func argumentValue(_ name: String, in arguments: [String]) throws -> String {
+        let index = try #require(arguments.firstIndex(of: name))
+        guard arguments.indices.contains(index + 1) else {
+            throw ContractError.invalidConfiguration("Missing value after \(name).")
+        }
+        return arguments[index + 1]
     }
     private func inventory() throws -> SimulatorInventory {
         let data = #"{"runtimes":[{"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-27-2","version":"27.2","buildversion":"A","isAvailable":true},{"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-26-0","version":"26.0","buildversion":"B","isAvailable":true}],"devicetypes":[{"name":"iPhone 17","identifier":"phone"}],"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-27-2":[{"udid":"new","name":"iPhone 17","isAvailable":true,"deviceTypeIdentifier":"phone"}],"com.apple.CoreSimulator.SimRuntime.iOS-26-0":[{"udid":"old","name":"iPhone 17","isAvailable":true,"deviceTypeIdentifier":"phone"}]}}"#

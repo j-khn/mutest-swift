@@ -206,7 +206,11 @@ private final class LockedJournal: @unchecked Sendable {
 
 public struct MutationEngine: Sendable {
     private let xcodebuildArguments: [String]
-    public init(xcodebuildArguments: [String] = []) { self.xcodebuildArguments = xcodebuildArguments }
+    private let xcodePackageOptions: XcodePackageOptions
+    public init(xcodebuildArguments: [String] = [], xcodePackageOptions: XcodePackageOptions = .init()) {
+        self.xcodebuildArguments = xcodebuildArguments
+        self.xcodePackageOptions = xcodePackageOptions
+    }
 
     public func run(configuration: RunConfiguration, outputDirectory: URL? = nil) throws -> MutationReport {
         let runStartedAt = Date()
@@ -217,6 +221,7 @@ public struct MutationEngine: Sendable {
         var adapterProject = configuration.project
         if configuration.project.kind != .swiftPackage { adapterProject.path = projectURL.lastPathComponent }
         try validate(configuration: configuration, root: root, projectURL: projectURL)
+        try xcodePackageOptions.validate(for: configuration.project.kind)
         let configuredOutput = configuration.output.directory.map {
             URL(fileURLWithPath: $0, relativeTo: root).standardizedFileURL
         }
@@ -293,27 +298,37 @@ public struct MutationEngine: Sendable {
         mutationLog("Test discovery complete: \(selection.identifiers.count) selected test identifiers (\(testScopeLabel)).")
         let xcodeBuildWorkspace = configuration.project.kind == .swiftPackage ? nil : try XcodeBuildWorkspace()
         defer { xcodeBuildWorkspace?.cleanup() }
-        let adapter = NativeTestAdapter(project: adapterProject, selection: configuration.tests, xcodebuildArguments: xcodebuildArguments, xcodeDerivedDataPath: xcodeBuildWorkspace?.derivedData)
-        let runner = ProcessRunner()
-        mutationLog("Resolving package dependencies…")
-        let dependencyResolutionStarted = Date()
-        let dependencyLog = logs.appendingPathComponent("dependency-resolution.log")
-        let dependencyCommand = try adapter.command(
-            root: sandbox,
-            phase: .resolveDependencies,
-            resolved: selection,
-            environment: [:],
-            timeout: TimeInterval(configuration.timeouts.buildSeconds),
-            output: dependencyLog,
-            xcodeContext: xcodeBuildWorkspace.map {
-                .init(destination: configuration.project.destination ?? "", derivedDataPath: $0.derivedData)
-            }
+        let adapter = NativeTestAdapter(
+            project: adapterProject,
+            selection: configuration.tests,
+            xcodebuildArguments: xcodebuildArguments,
+            xcodePackageOptions: xcodePackageOptions,
+            xcodeDerivedDataPath: xcodeBuildWorkspace?.derivedData
         )
-        let dependencyResult = try runner.run(dependencyCommand)
-        guard !dependencyResult.timedOut, dependencyResult.exitCode == 0 else {
-            throw MutationEngineError.dependencyResolutionFailed(log: dependencyLog, timedOut: dependencyResult.timedOut)
+        let runner = ProcessRunner()
+        if xcodePackageOptions.shouldResolveDependencies {
+            mutationLog("Resolving package dependencies…")
+            let dependencyResolutionStarted = Date()
+            let dependencyLog = logs.appendingPathComponent("dependency-resolution.log")
+            let dependencyCommand = try adapter.command(
+                root: sandbox,
+                phase: .resolveDependencies,
+                resolved: selection,
+                environment: [:],
+                timeout: TimeInterval(configuration.timeouts.buildSeconds),
+                output: dependencyLog,
+                xcodeContext: xcodeBuildWorkspace.map {
+                    .init(destination: configuration.project.destination ?? "", derivedDataPath: $0.derivedData)
+                }
+            )
+            let dependencyResult = try runner.run(dependencyCommand)
+            guard !dependencyResult.timedOut, dependencyResult.exitCode == 0 else {
+                throw MutationEngineError.dependencyResolutionFailed(log: dependencyLog, timedOut: dependencyResult.timedOut)
+            }
+            mutationLog("Package dependencies resolved in \(String(format: "%.1f", Date().timeIntervalSince(dependencyResolutionStarted)))s.")
+        } else if let packageDirectory = xcodePackageOptions.clonedSourcePackagesDirectory {
+            mutationLog("Skipping package resolution; using existing Xcode checkouts in \(packageDirectory.path).")
         }
-        mutationLog("Package dependencies resolved in \(String(format: "%.1f", Date().timeIntervalSince(dependencyResolutionStarted)))s.")
         let baselineLog = logs.appendingPathComponent("baseline.log")
         var baselineValidated = false
         var mutationPhaseStarted: Date?
@@ -376,7 +391,7 @@ public struct MutationEngine: Sendable {
         let inputHashStarted = Date()
         let dependencyInputs = packageDependencyInputFiles(graph: dependencyGraph, projectRoot: root)
             + resolvedDependencyInputFiles(in: sandboxLayout)
-        let inputDigest = try digestInputs(root: root, files: sourceFiles, configuration: digestConfiguration, xcodebuildArguments: xcodebuildArguments, excluding: [output, journalDirectory], runtimeFingerprint: simulatorTemplate?.fingerprint ?? "", additionalFiles: dependencyInputs)
+        let inputDigest = try digestInputs(root: root, files: sourceFiles, configuration: digestConfiguration, xcodebuildArguments: xcodebuildArguments, xcodePackageOptions: xcodePackageOptions, excluding: [output, journalDirectory], runtimeFingerprint: simulatorTemplate?.fingerprint ?? "", additionalFiles: dependencyInputs)
         timings.inputHashSeconds = Date().timeIntervalSince(inputHashStarted)
         let journal = journalDirectory.appendingPathComponent("journal.jsonl")
         let cached = configuration.cache.enabled ? loadJournal(at: journal) : []
@@ -1107,7 +1122,7 @@ public struct MutationEngine: Sendable {
         return String(filePath.dropFirst(prefix.count))
     }
 
-    private func digestInputs(root: URL, files: [URL], configuration: RunConfiguration, xcodebuildArguments: [String], excluding excludedPaths: [URL], runtimeFingerprint: String = "", additionalFiles: [(String, URL)] = []) throws -> String {
+    private func digestInputs(root: URL, files: [URL], configuration: RunConfiguration, xcodebuildArguments: [String], xcodePackageOptions: XcodePackageOptions, excluding excludedPaths: [URL], runtimeFingerprint: String = "", additionalFiles: [(String, URL)] = []) throws -> String {
         var inputs: [String: URL] = [:]
         let rootPath = root.standardizedFileURL.path.hasSuffix("/") ? root.standardizedFileURL.path : root.standardizedFileURL.path + "/"
         let excludedRelativePaths = excludedPaths.compactMap { path -> String? in
@@ -1159,6 +1174,7 @@ public struct MutationEngine: Sendable {
             content.append(0)
             content.append(contentsOf: argument.utf8)
         }
+        content.append(contentsOf: "\u{0}skip-xcode-package-resolution=\(xcodePackageOptions.skipResolution)".utf8)
         let environment = ProcessInfo.processInfo.environment
         let toolchainKeys = ["MUTEST_TOOLCHAIN_FINGERPRINT", "DEVELOPER_DIR", "TOOLCHAINS", "SDKROOT", "SWIFT_VERSION", "ARCHS", "CONFIGURATION"]
         for key in toolchainKeys {
@@ -1167,7 +1183,7 @@ public struct MutationEngine: Sendable {
             content.append(0)
             content.append(contentsOf: (environment[key] ?? "").utf8)
         }
-        content.append(contentsOf: "\u{0}0.3.1-xcode-workers-v6\u{0}\(runtimeFingerprint)\u{0}mutest-swift-cache-v6".utf8)
+        content.append(contentsOf: "\u{0}0.3.7-xcode-workers-v6\u{0}\(runtimeFingerprint)\u{0}mutest-swift-cache-v6".utf8)
         return SHA256Digest.hash(content)
     }
 

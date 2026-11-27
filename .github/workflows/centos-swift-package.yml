@@ -104,6 +104,34 @@ jobs:
           }, report['scope']
           assert report['summary']['killed'] == 1, report['summary']
           PY
+      - name: Run all tests in affected Swift packages
+        id: package-mutation
+        uses: ./.github/actions/run-mutation-testing
+        with:
+          project: pr-fixture
+          project-kind: swift-package
+          source-commit: ${{ steps.fixture.outputs.head }}
+          source-base: ${{ steps.fixture.outputs.base }}
+          source-scope: changed
+          test-scope: affected-packages
+          tool-path: ${{ steps.cli.outputs.tool-path }}
+          artifact-name: package-mutation-report-${{ matrix.centos }}
+          operators: arithmetic
+          workers: '1'
+      - name: Verify affected package run
+        env:
+          RUN_STATUS: ${{ steps.package-mutation.outputs.run-status }}
+          REPORT_DIRECTORY: ${{ steps.package-mutation.outputs.report-directory }}
+        run: |
+          test "$RUN_STATUS" = completed
+          python3 - "$REPORT_DIRECTORY/report.json" <<'PY'
+          import json, sys
+          with open(sys.argv[1]) as report_file:
+              report = json.load(report_file)
+          assert report['scope']['sources'] == ['Sources/Sample/Arithmetic.swift'], report['scope']
+          assert report['scope']['allTests'], report['scope']
+          assert report['summary']['killed'] == 1, report['summary']
+          PY
       - name: Create a docs-only change
         id: docs
         run: |
@@ -122,14 +150,15 @@ jobs:
           source-commit: ${{ steps.docs.outputs.head }}
           source-base: ${{ steps.docs.outputs.base }}
           tool-path: ${{ steps.cli.outputs.tool-path }}
-      - name: Verify skipped status and stale report cleanup
+      - name: Verify skipped status and report reason
         env:
           RUN_STATUS: ${{ steps.skipped.outputs.run-status }}
           REPORT_DIRECTORY: ${{ steps.skipped.outputs.report-directory }}
         run: |
           test "$RUN_STATUS" = skipped
           test ! -e "$REPORT_DIRECTORY/report.json"
-          test ! -e "$REPORT_DIRECTORY/report.md"
+          grep -q '^# Mutation testing skipped$' "$REPORT_DIRECTORY/report.md"
+          grep -q 'no changed production Swift files' "$REPORT_DIRECTORY/report.md"
       - name: Create a test-only change
         id: tests-only
         run: |

@@ -42,7 +42,7 @@ inputs:
     required: false
     default: ""
   test-scope:
-    description: all, changed, matching, or changed-and-matching; blank defaults to changed-and-matching when source-commit is set
+    description: all, changed, matching, changed-and-matching, or affected-packages; blank defaults to changed-and-matching when source-commit is set
     required: false
     default: ""
   test-file-suffix:
@@ -178,7 +178,7 @@ outputs:
     description: Directory containing report.md and report.json
     value: ${{ steps.arguments.outputs.report-directory }}
   run-status:
-    description: completed or skipped because no changed production Swift files were found
+    description: completed or skipped because no changed production files or selected test files were found
     value: ${{ steps.arguments.outputs.run-status }}
 runs:
   using: composite
@@ -343,7 +343,11 @@ runs:
         rm -f -- "$output/report.md" "$output/report.json"
         "$tool_binary" "${args[@]}" --output "$output"
         if [[ -f "$output/report.md" ]]; then
-          echo "run-status=completed" >> "$GITHUB_OUTPUT"
+          if grep -q '^# Mutation testing skipped$' "$output/report.md"; then
+            echo "run-status=skipped" >> "$GITHUB_OUTPUT"
+          else
+            echo "run-status=completed" >> "$GITHUB_OUTPUT"
+          fi
         else
           echo "run-status=skipped" >> "$GITHUB_OUTPUT"
         fi
@@ -374,7 +378,7 @@ runs:
         if [[ -f "$REPORT_PATH" ]]; then
           cat "$REPORT_PATH" >> "$GITHUB_STEP_SUMMARY"
         elif [[ "$RUN_STATUS" == "skipped" ]]; then
-          echo "No changed production Swift files were found in the requested commit range. Mutation testing was skipped." >> "$GITHUB_STEP_SUMMARY"
+          echo "Mutation testing was skipped. See the action log for the reason." >> "$GITHUB_STEP_SUMMARY"
         else
           echo "Mutation report was not produced. Check the earlier action logs for the failure." >> "$GITHUB_STEP_SUMMARY"
         fi

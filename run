@@ -44,6 +44,9 @@ Examples:
     xcode_group.add_argument("--destination-simulator", dest="destination", metavar="VALUE", help="iOS Simulator for Xcode tests, e.g. 'platform=iOS Simulator,name=iPhone 17,OS=latest' (prompted if omitted)")
     xcode_group.add_argument("--destination", dest="destination", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     xcode_group.add_argument("--workers", dest="parallelism", type=positive_int, default=2, metavar="COUNT", help="number of simultaneous mutation workers (default: 2)")
+    xcode_group.add_argument("--cloned-source-packages-dir", metavar="PATH", help="existing Xcode SourcePackages directory")
+    xcode_group.add_argument("--package-cache-path", metavar="PATH", help="existing Xcode Swift package cache directory")
+    xcode_group.add_argument("--skip-package-resolution", action="store_true", help="skip package resolution and automatic fetches during Xcode project builds")
     for alias in ("--parallelism", "--parallelization"):
         xcode_group.add_argument(alias, dest="parallelism", type=positive_int, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
 
@@ -367,6 +370,15 @@ def common_arguments(args: argparse.Namespace, include_xcodebuild_args: bool = T
         command.append("--no-cache")
     if args.no_resume:
         command.append("--no-resume")
+    if include_xcodebuild_args:
+        for option, value in (
+            ("--cloned-source-packages-dir", args.cloned_source_packages_dir),
+            ("--package-cache-path", args.package_cache_path),
+        ):
+            if value:
+                command += [option, value]
+        if args.skip_package_resolution:
+            command.append("--skip-package-resolution")
     return command
 
 
@@ -428,6 +440,8 @@ def run(args: argparse.Namespace) -> int:
     print(f"[run] Detecting project at {Path(args.project).expanduser()}…", flush=True)
     kind, project_path = discover_project(args.project)
     if kind == "swift-package":
+        if args.cloned_source_packages_dir or args.package_cache_path or args.skip_package_resolution:
+            raise RuntimeError("--cloned-source-packages-dir, --package-cache-path, and --skip-package-resolution are only for Xcode projects or workspaces.")
         if any((args.scheme, args.test_targets, args.destination)):
             print("Note: scheme, test target, and destination are only used for Xcode projects.")
         task = {"kind": kind, "path": str(project_path), "name": project_path.name}
