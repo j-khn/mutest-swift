@@ -261,16 +261,16 @@ Mutation types include changing comparisons, Boolean values, logical and arithme
 
 ## Releases
 
-Maintainers publish releases from the **Signed release** workflow on `main`. Choose **Actions → Signed release → Run workflow** and enter the version without the `v` prefix, such as `0.3.1`. The workflow signs the version tag using the `release` environment, creates a source archive and SHA-256 checksum, publishes a GitHub Release, and attests the archive provenance.
+Maintainers publish releases from the **Signed release** workflow on `main`. Choose **Actions → Signed release → Run workflow** and enter the version without the `v` prefix, such as `0.3.6`. The workflow signs the version tag using the `release` environment, creates a source archive and SHA-256 checksum, publishes a GitHub Release, and attests the archive provenance.
 
 After downloading the archive and checksum into the same directory, verify them with:
 
 ```sh
-shasum -a 256 -c mutest-swift-v0.3.1.tar.gz.sha256
-gh attestation verify mutest-swift-v0.3.1.tar.gz --owner j-khn
+shasum -a 256 -c mutest-swift-v0.3.6.tar.gz.sha256
+gh attestation verify mutest-swift-v0.3.6.tar.gz --owner j-khn
 ```
 
-To verify the signed tag, fetch it and run `git tag -v v0.3.1` in a clone of the repository.
+To verify the signed tag, fetch it and run `git tag -v v0.3.6` in a clone of the repository.
 
 ## License
 

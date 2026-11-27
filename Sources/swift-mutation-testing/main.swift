@@ -27,7 +27,7 @@ enum SwiftMutationTestingCLI {
         do {
             let arguments = try parse(Array(CommandLine.arguments.dropFirst()))
             if arguments.command == "help" || arguments.flags.contains("--help") || arguments.flags.contains("-h") { print(help); return }
-            if arguments.command == "version" { print("mutest-swift 0.3.1"); return }
+            if arguments.command == "version" { print("mutest-swift 0.3.6"); return }
             if arguments.command == "validate" {
                 var configuration = try makeConfiguration(arguments)
                 _ = try applyCommitScope(arguments, to: &configuration)
@@ -323,7 +323,7 @@ enum SwiftMutationTestingCLI {
     }
 
     static let help = """
-    mutest-swift 0.3.1
+    mutest-swift 0.3.6
 
     Usage:
       swift-mutation-testing run [options]
