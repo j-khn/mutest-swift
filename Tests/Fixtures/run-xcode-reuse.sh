@@ -61,7 +61,7 @@ for pass in cold warm; do
         --destination-simulator "platform=iOS Simulator,id=$device" \
         --source "$source_path" --test-name testMutestBuildReuseXCTest \
         --test-name mutestBuildReuseSwiftTest --operators boolean,removeSideEffects \
-        --narrow-xcode-test-build --xcode-build-timing-summary \
+        --xcode-build-timing-summary \
         --xcode-build-cache-dir "$artifacts/../compiled-cache" \
         --xcodebuild-arg CODE_SIGNING_ALLOWED=NO --workers 1 --no-cache \
         --build-timeout 600 --baseline-timeout 180 --mutant-timeout 120 \
@@ -77,6 +77,7 @@ import sys
 root = Path(sys.argv[1])
 verdicts = []
 for name in ("cold", "warm"):
+    assert "Narrowed the Xcode test build to: MutationTestIOSAppTests." in (root / f"{name}.log").read_text()
     report = json.loads((root / name / "report.json").read_text())
     scope = report["scope"]
     assert len(scope["tests"]) == 2, scope

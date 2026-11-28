@@ -92,7 +92,7 @@ enum SwiftMutationTestingCLI {
             "--destination-simulator": "--destination",
             "--workers": "--parallelism",
         ]
-        let flagOptions: Set<String> = ["--narrow-xcode-test-build", "--xcode-build-timing-summary", "--no-resume", "--no-cache", "--no-suppressions", "--require-suppression-reason", "--fail-on-new-survivors", "--skip-package-resolution", "--help", "-h"]
+        let flagOptions: Set<String> = ["--narrow-xcode-test-build", "--full-xcode-test-build", "--xcode-build-timing-summary", "--no-resume", "--no-cache", "--no-suppressions", "--require-suppression-reason", "--fail-on-new-survivors", "--skip-package-resolution", "--help", "-h"]
         var index = 1
         while index < arguments.count {
             let option = arguments[index]
@@ -333,18 +333,29 @@ enum SwiftMutationTestingCLI {
         let jobs = arguments.first("--xcode-build-jobs")
         let cache = arguments.first("--xcode-build-cache-dir")
         let plan = arguments.first("--xcode-test-plan")
-        let narrow = arguments.flags.contains("--narrow-xcode-test-build")
+        let forceNarrow = arguments.flags.contains("--narrow-xcode-test-build")
+        let forceFull = arguments.flags.contains("--full-xcode-test-build")
+        guard !(forceNarrow && forceFull) else {
+            throw CLIError.usage("Use only one of --narrow-xcode-test-build and --full-xcode-test-build.")
+        }
+        let narrow: Bool? = forceNarrow ? true : (forceFull ? false : nil)
         let timing = arguments.flags.contains("--xcode-build-timing-summary")
         let coverage = arguments.first("--xcode-code-coverage")
         if let coverage, coverage != "on" && coverage != "off" {
             throw CLIError.usage("--xcode-code-coverage must be on or off.")
         }
-        if projectKind == .swiftPackage && (jobs != nil || cache != nil || plan != nil || narrow || timing || coverage != nil) {
+        if projectKind == .swiftPackage && (jobs != nil || cache != nil || plan != nil || narrow != nil || timing || coverage != nil) {
             throw CLIError.usage("Xcode build options require an Xcode project or workspace.")
         }
         if cache?.isEmpty == true { throw CLIError.usage("--xcode-build-cache-dir requires a directory path.") }
+        let buildJobs: Int?
+        if let jobs, jobs != "auto" {
+            buildJobs = try integer(jobs, name: "--xcode-build-jobs")
+        } else {
+            buildJobs = nil
+        }
         let options = XcodeBuildOptions(
-            jobs: jobs == "auto" ? nil : try integer(jobs ?? "2", name: "--xcode-build-jobs"),
+            jobs: buildJobs,
             cacheDirectory: cache.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL },
             narrowTestBuild: narrow,
             testPlan: plan,
@@ -412,10 +423,11 @@ enum SwiftMutationTestingCLI {
       --test-file-suffix SUFFIX       Filename suffix after a changed source name (default: Tests.swift); repeatable
       --destination-simulator VALUE  iOS Simulator for Xcode tests, e.g. platform=iOS Simulator,name=iPhone 17,OS=latest
       --xcodebuild-arg NAME=VALUE    Xcode build setting; repeatable
-      --xcode-build-jobs auto|N      Xcode build jobs, independent of test workers (default: 2)
+      --xcode-build-jobs auto|N      Xcode build jobs, independent of test workers (default: auto)
       --xcode-build-cache-dir PATH   Opt in to a dedicated compiled Xcode build cache
       --xcode-test-plan NAME         Xcode test plan in the selected scheme
-      --narrow-xcode-test-build     Try narrowing a shared scheme to selected test targets
+      --narrow-xcode-test-build     Force a smaller build graph for selected test targets
+      --full-xcode-test-build       Build the full scheme, even when tests are selected
       --xcode-code-coverage on|off  Override the scheme’s build coverage setting
       --xcode-build-timing-summary  Include Xcode build timing summaries in build logs
       --cloned-source-packages-dir PATH  Use an existing Xcode SourcePackages directory

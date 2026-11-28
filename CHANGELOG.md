@@ -3,7 +3,9 @@
 ## Unreleased
 
 - Reuse the original Xcode build workspace for isolated mutants to avoid another cold build, while keeping source-relative fixtures stable during their tests.
-- Add opt-in compiled Xcode caching, shared scheme narrowing, test plan selection, configurable build jobs and Xcode timing summaries.
+- Add opt-in compiled Xcode caching, test plan selection, configurable build jobs and Xcode timing summaries.
+- Narrow Xcode builds automatically when tests are selected. Xcode chooses build parallelism by default.
+- Explain when the mutation baseline can replace a separate CI build step.
 - Report original, schema and isolated builds separately from unit test commands, with timing for each retry.
 - Cover comment and blank-line edits with a change selection regression test.
 

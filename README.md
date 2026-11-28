@@ -82,10 +82,10 @@ For an Xcode project or workspace, the tool asks which scheme, test scope, and s
 | `--operators NAMES` | Comma-separated: `relational`, `boolean`, `logical`, `arithmetic`, `negateConditional`, `swapTernary`, `removeSideEffects` | Limits the kinds of changes made. |
 | `--operator-tier TIER` | `experimental` (default) or `all` | Chooses the operator set. `conservative` and `default` are not available yet. |
 | `--xcodebuild-arg NAME=VALUE` | Xcode build setting; repeatable | Passes a setting to Xcode builds. |
-| `--xcode-build-jobs auto\|N` | Defaults to `2` | Sets Xcode build concurrency independently of test workers. Use `auto` to let Xcode choose. |
+| `--xcode-build-jobs auto\|N` | Defaults to `auto` | Lets Xcode choose build concurrency independently of test workers. Set a number to cap it. |
 | `--xcode-build-cache-dir PATH` | Optional directory outside the checkout | Reuses compiled Xcode products between runs on the same runner. |
 | `--xcode-test-plan NAME` | Optional plan in the selected scheme | Uses the named Xcode test plan. |
-| `--narrow-xcode-test-build` | Optional | Tries to build only selected test targets and their required build graph. |
+| `--full-xcode-test-build` | Optional | Builds the full scheme even when selecting specific tests. |
 | `--xcode-code-coverage on\|off` | Uses the scheme setting by default | Overrides Xcode coverage instrumentation. Mutest still tracks mutant activation. |
 | `--xcode-build-timing-summary` | Optional | Includes Xcode's task timing summary in build logs. |
 | `--cloned-source-packages-dir PATH` | Existing Xcode `SourcePackages` directory | Reuses package checkouts from that directory. |
@@ -117,7 +117,7 @@ Examples:
 ./run /path/to/MyApp.xcodeproj --scheme MyApp --source-commit HEAD --source-base main --test-file-suffix Tests.swift
 ```
 
-The last command runs all tests in A and B, every test in `CTests.swift`, all tests in `Suite1` from E, and the one named test from D. Xcode builds the selected scheme's test products; test runs use only this combined selection. Replace the sample target and selector names with names from your scheme.
+The last command runs all tests in A and B, every test in `CTests.swift`, all tests in `Suite1` from E, and the one named test from D. Xcode builds the selected test targets and their dependencies when the scheme supports it. Test runs use only this combined selection. Replace the sample target and selector names with names from your scheme.
 
 </details>
 
@@ -218,11 +218,16 @@ toolchain stable across runs for cache reuse. The cache uses separate entries
 for different build inputs such as a changed scheme or toolchain. To reclaim
 disk space, remove the dedicated cache directory while no runs are using it.
 
-Use `--narrow-xcode-test-build` to try a smaller build graph when you select
-specific test targets or files. The shared scheme and test plan are adjusted
-only in the run's copy. Hosts and required dependencies stay in the build. If
-the shared metadata cannot be narrowed safely, the original build graph is
-used and the reason is logged.
+When you select specific tests or test targets, mutest-swift narrows the
+shared scheme and test plan in its isolated copy. Xcode builds the selected
+targets and their required hosts and dependencies. If the scheme cannot be
+narrowed safely, mutest-swift logs the reason and uses the original graph.
+Pass `--full-xcode-test-build` for schemes that need extra build targets.
+
+The mutation run already builds the original code and runs the selected tests
+before applying any mutations. A separate `xcodebuild build-for-testing` step
+from your checkout uses a different source path and DerivedData. If that step
+exists only to check the mutation baseline, remove it to avoid building twice.
 
 The report separates original compilation, schema compilation, isolated
 compilation, and test command times. Parallel commands can overlap. Use total
@@ -289,7 +294,7 @@ Mutation types include changing comparisons, Boolean values, logical and arithme
 ## What affects run time and cache reuse?
 
 - Xcode simulator runs can use up to `--workers` workers (default: `2`). Swift package runs use parallel workers with Swift Testing; packages that use XCTest run serially.
-- Xcode builds use at most two build jobs. The original-code build finishes before simulator workers boot, and workers boot one at a time. Mutant tests still run in parallel after startup.
+- Xcode chooses its build job count unless you pass `--xcode-build-jobs`. The original build starts while the simulators boot. Mutant tests can run in parallel after startup.
 - If an Xcode build fails only because build rules time out, mutest-swift retries once with one build job and the same DerivedData folder. The retry can reuse successful cache entries from the first attempt; other build errors are not retried.
 - A source folder can contain hundreds of mutants. Xcode starts a test command for each one, so a 365-mutant run with one worker can take over an hour even if the selected tests take only seconds inside the simulator. The CLI shows the file and mutant counts and a time guide before mutant runs. For a quick local check, pass one or more specific files with `--mutation-source`; the selected tests stay the same.
 - Before running mutants, Xcode tests must pass on the original code and on the compiled schema with all mutants inactive. If the inactive schema fails, the tool retries it, checks the original tests again, and identifies a smaller incompatible group only when the original tests stay stable. It stops without a score rather than reporting false kills.

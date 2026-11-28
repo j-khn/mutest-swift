@@ -9,12 +9,13 @@ public struct XcodeBuildOptions: Sendable {
     /// nil lets Xcode schedule its own builds.
     public var jobs: Int?
     public var cacheDirectory: URL?
-    public var narrowTestBuild: Bool
+    /// nil automatically narrows builds when the selected test scope names targets.
+    public var narrowTestBuild: Bool?
     public var testPlan: String?
     public var buildTimingSummary: Bool
     public var codeCoverage: Bool?
 
-    public init(jobs: Int? = 2, cacheDirectory: URL? = nil, narrowTestBuild: Bool = false,
+    public init(jobs: Int? = nil, cacheDirectory: URL? = nil, narrowTestBuild: Bool? = nil,
                 testPlan: String? = nil, buildTimingSummary: Bool = false, codeCoverage: Bool? = nil) {
         self.jobs = jobs
         self.cacheDirectory = cacheDirectory
@@ -29,7 +30,7 @@ public struct XcodeBuildOptions: Sendable {
         if let testPlan, testPlan.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw ContractError.invalidConfiguration("Xcode test plan must be a non-empty name.")
         }
-        if kind == .swiftPackage && (jobs != 2 || cacheDirectory != nil || narrowTestBuild || testPlan != nil || buildTimingSummary || codeCoverage != nil) {
+        if kind == .swiftPackage && (jobs != nil || cacheDirectory != nil || narrowTestBuild != nil || testPlan != nil || buildTimingSummary || codeCoverage != nil) {
             throw ContractError.invalidConfiguration("Xcode build options require an Xcode project or workspace.")
         }
     }

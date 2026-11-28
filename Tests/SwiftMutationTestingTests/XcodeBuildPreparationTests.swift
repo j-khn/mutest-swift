@@ -71,7 +71,7 @@ struct XcodeBuildPreparationTests {
         #expect(date == Date(timeIntervalSince1970: 1000))
     }
 
-    @Test("scope removes unrelated test roots and preserves host, variables and coverage")
+    @Test("scope keeps selected test roots and leaves required hosts to implicit dependencies")
     func narrowBuildGraph() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -85,9 +85,10 @@ struct XcodeBuildPreparationTests {
             "<BuildableReference BlueprintName=\"\(name)\" BlueprintIdentifier=\"\(name)\" ReferencedContainer=\"container:Fixture.xcodeproj\" BuildableName=\"\(name).\(suffix)\"/>"
         }
         let xml = """
-        <Scheme><BuildAction><BuildActionEntries>
+        <Scheme><BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES"><BuildActionEntries>
         <BuildActionEntry buildForTesting="YES">\(reference("Host", extension: "app"))</BuildActionEntry>
         <BuildActionEntry buildForTesting="YES">\(reference("Other", extension: "xctest"))</BuildActionEntry>
+        <BuildActionEntry buildForTesting="YES">\(reference("Wanted", extension: "xctest"))</BuildActionEntry>
         </BuildActionEntries></BuildAction><TestAction>
         <TestPlans><TestPlanReference reference="container:Unit Plan.xctestplan" default="YES"/></TestPlans>
         <Testables><TestableReference>\(reference("Other", extension: "xctest"))</TestableReference></Testables>
@@ -106,13 +107,37 @@ struct XcodeBuildPreparationTests {
         #expect(try XcodeTestBuildScope.narrow(project: project, sandbox: sandbox, targets: ["Wanted"], testPlan: "Unit Plan") == nil)
         let document = try XMLDocument(contentsOf: scheme)
         let entries = try document.nodes(forXPath: "/Scheme/BuildAction/BuildActionEntries/BuildActionEntry/@buildForTesting")
-        #expect(entries.compactMap(\.stringValue) == ["YES", "NO"])
+        #expect(entries.compactMap(\.stringValue) == ["NO", "NO", "YES"])
         #expect(try document.nodes(forXPath: "/Scheme/TestAction/Testables/TestableReference").isEmpty)
         #expect(try document.nodes(forXPath: "/Scheme/TestAction/EnvironmentVariables/EnvironmentVariable").count == 1)
         let filtered = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: plan)) as? [String: Any])
         #expect((filtered["defaultOptions"] as? [String: Bool])?["codeCoverage"] == true)
         let entriesInPlan = try #require(filtered["testTargets"] as? [[String: [String: String]]])
         #expect(entriesInPlan.compactMap { $0["target"]?["name"] } == ["Wanted"])
+    }
+
+    @Test("keeps the original build graph when implicit target dependencies are disabled")
+    func narrowBuildRequiresImplicitDependencies() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = ProjectConfiguration(kind: .xcodeProject, path: "Fixture.xcodeproj", scheme: "Fixture")
+        let sandbox = ProjectSandbox(container: root, root: root, localPackages: [])
+        let schemes = root.appendingPathComponent("Fixture.xcodeproj/xcshareddata/xcschemes")
+        try FileManager.default.createDirectory(at: schemes, withIntermediateDirectories: true)
+        let scheme = schemes.appendingPathComponent("Fixture.xcscheme")
+        let xml = """
+        <Scheme><BuildAction buildImplicitDependencies="NO"><BuildActionEntries>
+        <BuildActionEntry buildForTesting="YES"><BuildableReference BlueprintName="Host" BlueprintIdentifier="Host" ReferencedContainer="container:Fixture.xcodeproj" BuildableName="Host.app"/></BuildActionEntry>
+        </BuildActionEntries></BuildAction><TestAction><TestPlans><TestPlanReference reference="container:Plan.xctestplan" default="YES"/></TestPlans></TestAction></Scheme>
+        """
+        try Data(xml.utf8).write(to: scheme)
+        let plan = root.appendingPathComponent("Plan.xctestplan")
+        let planData = Data(#"{"testTargets":[{"target":{"name":"Wanted","identifier":"Wanted","containerPath":"container:Fixture.xcodeproj"}}]}"#.utf8)
+        try planData.write(to: plan)
+
+        #expect(try XcodeTestBuildScope.narrow(project: project, sandbox: sandbox, targets: ["Wanted"], testPlan: "Plan") == "the shared scheme does not enable implicit target dependencies")
+        #expect(try Data(contentsOf: scheme) == Data(xml.utf8))
+        #expect(try Data(contentsOf: plan) == planData)
     }
 
     private func temporaryDirectory() throws -> URL {

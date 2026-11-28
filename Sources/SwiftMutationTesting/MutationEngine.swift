@@ -298,6 +298,8 @@ public struct MutationEngine: Sendable {
             testScopeLabel = "full scheme test plan"
         }
         mutationLog("Test discovery complete: \(selection.identifiers.count) selected test identifiers (\(testScopeLabel)).")
+        let narrowXcodeBuild = configuration.project.kind != .swiftPackage
+            && (xcodeBuildOptions.narrowTestBuild ?? (!selection.allTests && !selection.targets.isEmpty))
         let xcodeBuildWorkspace: XcodeBuildWorkspace?
         if configuration.project.kind != .swiftPackage, let cache = xcodeBuildOptions.cacheDirectory {
             let cache = cache.standardizedFileURL.resolvingSymlinksInPath()
@@ -321,7 +323,7 @@ public struct MutationEngine: Sendable {
                        xcodeBuildOptions.codeCoverage.map { String($0) } ?? "",
                        environment["DEVELOPER_DIR"] ?? "", environment["TOOLCHAINS"] ?? "",
                        environment["SDKROOT"] ?? "", environment["XCODE_XCCONFIG_FILE"] ?? "",
-                       xcodeBuildOptions.narrowTestBuild ? selection.targets.sorted().joined(separator: "|") : "",
+                       narrowXcodeBuild ? selection.targets.sorted().joined(separator: "|") : "",
                        dependencyGraph.localPackages.map(\.path).sorted().joined(separator: "\n")] + packages + xcodebuildArguments
             xcodeBuildWorkspace = try XcodeBuildWorkspace.open(cache: cache, key: String(decoding: JSONEncoder().encode(key), as: UTF8.self))
         } else {
@@ -331,7 +333,7 @@ public struct MutationEngine: Sendable {
         let prepareStarted = ProcessInfo.processInfo.systemUptime
         // Narrow the staged copy before syncing it so a warm cache retains the
         // effective scheme and plan with their existing modification times.
-        if xcodeBuildOptions.narrowTestBuild {
+        if narrowXcodeBuild {
             if let reason = try XcodeTestBuildScope.narrow(project: adapterProject, sandbox: stagedSandbox,
                     targets: Set(selection.targets), testPlan: xcodeBuildOptions.testPlan) {
                 mutationLog("Using the original Xcode build graph because \(reason).")
@@ -439,7 +441,7 @@ public struct MutationEngine: Sendable {
         var verdictBuildArguments = xcodebuildArguments
         if let plan = xcodeBuildOptions.testPlan { verdictBuildArguments.append("mutest:test-plan=" + plan) }
         if let coverage = xcodeBuildOptions.codeCoverage { verdictBuildArguments.append("mutest:code-coverage=" + String(coverage)) }
-        if xcodeBuildOptions.narrowTestBuild { verdictBuildArguments.append("mutest:narrow-test-build") }
+        if narrowXcodeBuild { verdictBuildArguments.append("mutest:narrow-test-build") }
         let inputDigest = try digestInputs(root: root, files: sourceFiles, configuration: digestConfiguration,
             xcodebuildArguments: verdictBuildArguments, xcodePackageOptions: xcodePackageOptions, excluding: [output, journalDirectory],
             runtimeFingerprint: simulatorTemplate?.fingerprint ?? "", additionalFiles: dependencyInputs)

@@ -94,16 +94,19 @@ enum XcodeTestBuildScope {
             }
         }
 
-        let entries = schemeElement.elements(forName: "BuildAction").first?
-            .elements(forName: "BuildActionEntries").first?.elements(forName: "BuildActionEntry") ?? []
+        guard let buildAction = schemeElement.elements(forName: "BuildAction").first,
+              buildAction.attribute(forName: "buildImplicitDependencies")?.stringValue == "YES",
+              let buildEntries = buildAction.elements(forName: "BuildActionEntries").first
+        else { return "the shared scheme does not enable implicit target dependencies" }
+
+        let selected = Set(knownTargets.filter { targets.contains($0.name) })
+        let entries = buildEntries.elements(forName: "BuildActionEntry")
         for entry in entries {
             guard let reference = entry.elements(forName: "BuildableReference").first,
-                  let target = Target(reference) else { continue }
-            let bundle = reference.attribute(forName: "BuildableName")?.stringValue
-            if (knownTargets.contains(target) || bundle?.hasSuffix(".xctest") == true),
-               !targets.contains(target.name) {
-                entry.attribute(forName: "buildForTesting")?.stringValue = "NO"
-            }
+                  let target = Target(reference) else { return "a build action has an incomplete target identity" }
+            // Keep only the selected test targets as scheme build roots. Their app hosts
+            // and product dependencies are still built by Xcode through the target graph.
+            entry.attribute(forName: "buildForTesting")?.stringValue = selected.contains(target) ? "YES" : "NO"
         }
 
         // Preserve the original URL, scheme name, actions and relative paths.
