@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.10 — 2026-11-28
 
 - Reuse the original Xcode build workspace for isolated mutants to avoid another cold build, while keeping source-relative fixtures stable during their tests.
 - Add opt-in compiled Xcode caching, test plan selection, configurable build jobs and Xcode timing summaries.

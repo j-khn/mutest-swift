@@ -45,6 +45,7 @@ Examples:
     xcode_group.add_argument("--destination", dest="destination", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     xcode_group.add_argument("--workers", dest="parallelism", type=positive_int, default=2, metavar="COUNT", help="number of simultaneous mutation workers (default: 2)")
     xcode_group.add_argument("--cloned-source-packages-dir", metavar="PATH", help="existing Xcode SourcePackages directory")
+    xcode_group.add_argument("--full-xcode-test-build", action="store_true", help="build the full scheme even when selecting specific tests")
     xcode_group.add_argument("--package-cache-path", metavar="PATH", help="existing Xcode Swift package cache directory")
     xcode_group.add_argument("--skip-package-resolution", action="store_true", help="skip package resolution and automatic fetches during Xcode project builds")
     for alias in ("--parallelism", "--parallelization"):
@@ -377,6 +378,8 @@ def common_arguments(args: argparse.Namespace, include_xcodebuild_args: bool = T
         ):
             if value:
                 command += [option, value]
+        if args.full_xcode_test_build:
+            command.append("--full-xcode-test-build")
         if args.skip_package_resolution:
             command.append("--skip-package-resolution")
     return command

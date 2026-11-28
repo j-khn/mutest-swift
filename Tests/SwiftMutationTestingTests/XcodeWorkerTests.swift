@@ -74,13 +74,14 @@ struct XcodeWorkerTests {
         #expect(command.arguments.contains("ARCHS=x86_64"))
         #endif
         #expect(command.arguments.contains("ONLY_ACTIVE_ARCH=YES"))
-        let jobsIndex = try #require(command.arguments.firstIndex(of: "-jobs"))
-        #expect(command.arguments[jobsIndex + 1] == "2")
+        #expect(!command.arguments.contains("-jobs"))
         let testCommand = try adapter.command(root: root, phase: .testWithoutBuilding, resolved: .init(identifiers: [], allTests: true), environment: [:], timeout: 30, output: root.appendingPathComponent("test.log"), xcodeContext: context)
         #expect(!testCommand.arguments.contains("-jobs"))
 
-        let explicit = NativeTestAdapter(project: project, selection: .init(), xcodebuildArguments: ["ARCHS=arm64", "ONLY_ACTIVE_ARCH=NO"])
+        let explicit = NativeTestAdapter(project: project, selection: .init(), xcodebuildArguments: ["ARCHS=arm64", "ONLY_ACTIVE_ARCH=NO"], xcodeBuildOptions: .init(jobs: 2))
         let explicitCommand = try explicit.command(root: root, phase: .buildForTesting, resolved: .init(identifiers: [], allTests: true), environment: [:], timeout: 30, output: root.appendingPathComponent("explicit-build.log"), xcodeContext: context)
+        let jobsIndex = try #require(explicitCommand.arguments.firstIndex(of: "-jobs"))
+        #expect(explicitCommand.arguments[jobsIndex + 1] == "2")
         #expect(explicitCommand.arguments.filter { $0.hasPrefix("ARCHS=") } == ["ARCHS=arm64"])
         #expect(explicitCommand.arguments.filter { $0.hasPrefix("ONLY_ACTIVE_ARCH=") } == ["ONLY_ACTIVE_ARCH=NO"])
     }
