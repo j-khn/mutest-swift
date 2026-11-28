@@ -1,8 +1,12 @@
 # Changelog
 
+## v0.3.9 — 2026-11-28
+
+- Use generic wording for build rule timeout retry messages and logs.
+
 ## v0.3.8 — 2026-11-28
 
-- Retry Xcode builds once with one build job when the only reported errors are SwiftFormat rule timeouts. The retry uses the same DerivedData folder so successful formatter cache entries can be reused.
+- Retry Xcode builds once with one build job when the only reported errors are build rule timeouts. The retry uses the same DerivedData folder so successful cache entries can be reused.
 
 ## v0.3.7 — 2026-11-27
 

@@ -153,7 +153,7 @@ jobs:
           trap 'rm -rf "$tool_dir"' EXIT
           git -C "$tool_dir" init --quiet
           git -C "$tool_dir" remote add origin https://github.com/j-khn/mutest-swift.git
-          git -C "$tool_dir" fetch --depth 1 origin refs/tags/v0.3.8
+          git -C "$tool_dir" fetch --depth 1 origin refs/tags/v0.3.9
           git -C "$tool_dir" checkout --quiet --detach FETCH_HEAD
           swift build --package-path "$tool_dir" --product swift-mutation-testing
           bin_dir="$(swift build --package-path "$tool_dir" --show-bin-path)"
@@ -250,7 +250,7 @@ Mutation types include changing comparisons, Boolean values, logical and arithme
 
 - Xcode simulator runs can use up to `--workers` workers (default: `2`). Swift package runs use parallel workers with Swift Testing; packages that use XCTest run serially.
 - Xcode builds use at most two build jobs. The original-code build finishes before simulator workers boot, and workers boot one at a time. Mutant tests still run in parallel after startup.
-- If a build fails only because SwiftFormat rules time out, mutest-swift retries once with one Xcode build job and the same DerivedData folder. The retry can reuse formatter cache entries from the first attempt; other build errors are not retried.
+- If an Xcode build fails only because build rules time out, mutest-swift retries once with one build job and the same DerivedData folder. The retry can reuse successful cache entries from the first attempt; other build errors are not retried.
 - A source folder can contain hundreds of mutants. Xcode starts a test command for each one, so a 365-mutant run with one worker can take over an hour even if the selected tests take only seconds inside the simulator. The CLI shows the file and mutant counts and a time guide before mutant runs. For a quick local check, pass one or more specific files with `--mutation-source`; the selected tests stay the same.
 - Before running mutants, Xcode tests must pass on the original code and on the compiled schema with all mutants inactive. If the inactive schema fails, the tool retries it, checks the original tests again, and identifies a smaller incompatible group only when the original tests stay stable. It stops without a score rather than reporting false kills.
 - Xcode build files and downloaded dependencies stay in a temporary folder outside your copied source tree, so project-wide lint plugins do not scan that build folder. The folder is removed when the run finishes or fails. Your project's lint plugins still run normally.
@@ -263,16 +263,16 @@ Mutation types include changing comparisons, Boolean values, logical and arithme
 
 ## Releases
 
-Maintainers publish releases from the **Signed release** workflow on `main`. Choose **Actions → Signed release → Run workflow** and enter the version without the `v` prefix, such as `0.3.8`. The workflow signs the version tag using the `release` environment, creates a source archive and SHA-256 checksum, publishes a GitHub Release, and attests the archive provenance.
+Maintainers publish releases from the **Signed release** workflow on `main`. Choose **Actions → Signed release → Run workflow** and enter the version without the `v` prefix, such as `0.3.9`. The workflow signs the version tag using the `release` environment, creates a source archive and SHA-256 checksum, publishes a GitHub Release, and attests the archive provenance.
 
 After downloading the archive and checksum into the same directory, verify them with:
 
 ```sh
-shasum -a 256 -c mutest-swift-v0.3.8.tar.gz.sha256
-gh attestation verify mutest-swift-v0.3.8.tar.gz --owner j-khn
+shasum -a 256 -c mutest-swift-v0.3.9.tar.gz.sha256
+gh attestation verify mutest-swift-v0.3.9.tar.gz --owner j-khn
 ```
 
-To verify the signed tag, fetch it and run `git tag -v v0.3.8` in a clone of the repository.
+To verify the signed tag, fetch it and run `git tag -v v0.3.9` in a clone of the repository.
 
 ## License
 

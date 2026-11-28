@@ -312,20 +312,20 @@ final class XcodeMutationExecutor: @unchecked Sendable {
             xcodeContext: .init(destination: worker.destination, derivedDataPath: derivedData))
         let result = try commandRunner(command)
         guard !result.timedOut, result.exitCode != 0,
-              Self.failedOnlyOnSwiftFormatTimeouts(result.output),
+              Self.failedOnlyOnBuildRuleTimeouts(result.output),
               let jobsIndex = command.arguments.firstIndex(of: "-jobs"),
               command.arguments.index(after: jobsIndex) < command.arguments.endIndex,
               command.arguments[command.arguments.index(after: jobsIndex)] != "1"
         else { return result }
 
-        mutationLog("SwiftFormat rules timed out during \(label); retrying once with one Xcode build job and the same DerivedData cache.")
+        mutationLog("Xcode build rules timed out during \(label); retrying once with one build job and the same DerivedData cache.")
         var retry = command
         retry.arguments[retry.arguments.index(after: jobsIndex)] = "1"
-        retry.outputFile = log("\(label)-swiftformat-retry")
+        retry.outputFile = log("\(label)-rule-timeout-retry")
         return try commandRunner(retry)
     }
 
-    static func failedOnlyOnSwiftFormatTimeouts(_ output: String) -> Bool {
+    static func failedOnlyOnBuildRuleTimeouts(_ output: String) -> Bool {
         let errors = output.split(whereSeparator: \.isNewline).filter { $0.localizedCaseInsensitiveContains("error:") }
         return !errors.isEmpty && errors.allSatisfy { $0.localizedCaseInsensitiveContains("rule timed out in") }
     }

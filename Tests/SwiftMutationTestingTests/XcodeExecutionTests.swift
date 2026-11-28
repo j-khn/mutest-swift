@@ -14,10 +14,10 @@ private final class FakeXcode: @unchecked Sendable {
     private(set) var initialBuildSawBoot = false
     private(set) var maximumActiveBuilds = 0
     private var activeBuilds = 0
-    private var didFailSwiftFormatBuild = false
+    private var didFailRuleTimeoutBuild = false
     let failSchema: Bool
     let failOriginalBuild: Bool
-    let failFirstBuildWithSwiftFormatTimeout: Bool
+    let failFirstBuildWithRuleTimeout: Bool
     let timeoutFirstAttempt: Bool
     let mismatchBaseline: Bool
     let failInitialSchemaOnly: Bool
@@ -27,10 +27,10 @@ private final class FakeXcode: @unchecked Sendable {
     init(failSchema: Bool = false, failOriginalBuild: Bool = false, timeoutFirstAttempt: Bool = false,
          mismatchBaseline: Bool = false, failInitialSchemaOnly: Bool = false,
          failInactiveSchemaBaseline: Bool = false, failOriginalRecheck: Bool = false,
-         failWithoutActivation: Bool = false, failFirstBuildWithSwiftFormatTimeout: Bool = false) {
+         failWithoutActivation: Bool = false, failFirstBuildWithRuleTimeout: Bool = false) {
         self.failSchema = failSchema; self.timeoutFirstAttempt = timeoutFirstAttempt; self.mismatchBaseline = mismatchBaseline
         self.failOriginalBuild = failOriginalBuild
-        self.failFirstBuildWithSwiftFormatTimeout = failFirstBuildWithSwiftFormatTimeout
+        self.failFirstBuildWithRuleTimeout = failFirstBuildWithRuleTimeout
         self.failInitialSchemaOnly = failInitialSchemaOnly
         self.failInactiveSchemaBaseline = failInactiveSchemaBaseline
         self.failOriginalRecheck = failOriginalRecheck
@@ -44,10 +44,10 @@ private final class FakeXcode: @unchecked Sendable {
         if command.arguments.contains("build-for-testing") {
             let initial = command.outputFile.lastPathComponent.hasPrefix("baseline-build")
             let hasBooted = simulators.snapshot().commands.contains { $0.first == "boot" }
-            var shouldFailSwiftFormat = false
+            var shouldFailRuleTimeout = false
             lock.lock()
-            shouldFailSwiftFormat = failFirstBuildWithSwiftFormatTimeout && !didFailSwiftFormatBuild
-            if shouldFailSwiftFormat { didFailSwiftFormatBuild = true }
+            shouldFailRuleTimeout = failFirstBuildWithRuleTimeout && !didFailRuleTimeoutBuild
+            if shouldFailRuleTimeout { didFailRuleTimeoutBuild = true }
             builds.append(command)
             initialBuildSawBoot = initialBuildSawBoot || (initial && hasBooted)
             activeBuilds += 1; maximumActiveBuilds = max(maximumActiveBuilds, activeBuilds)
@@ -60,8 +60,8 @@ private final class FakeXcode: @unchecked Sendable {
                 lock.unlock()
             }
             Thread.sleep(forTimeInterval: 0.01)
-            if shouldFailSwiftFormat {
-                output = "error: duplicateImports rule timed out in /fixture/ShareNetworkingTests.swift.\n"
+            if shouldFailRuleTimeout {
+                output = "error: sampleRule rule timed out in /fixture/File.swift.\n"
                 exit = 65
             } else if failOriginalBuild || (failSchema && command.outputFile.lastPathComponent.hasPrefix("schema-"))
                 || (failInitialSchemaOnly && command.outputFile.lastPathComponent == "schema-build.log") { exit = 65 }
@@ -191,16 +191,16 @@ struct XcodeExecutionTests {
         }
     }
 
-    @Test("SwiftFormat rule timeouts retry once with one job and the same DerivedData")
-    func swiftFormatTimeoutRetriesSerially() throws {
-        let fake = FakeXcode(failFirstBuildWithSwiftFormatTimeout: true)
+    @Test("Build rule timeouts retry once with one job and the same DerivedData")
+    func buildRuleTimeoutRetriesSerially() throws {
+        let fake = FakeXcode(failFirstBuildWithRuleTimeout: true)
         _ = try campaign(fake, workers: 1)
 
         #expect(fake.builds.count >= 2)
         let first = fake.builds[0]
         let retry = fake.builds[1]
         #expect(first.outputFile.lastPathComponent == "baseline-build.log")
-        #expect(retry.outputFile.lastPathComponent == "baseline-build-swiftformat-retry.log")
+        #expect(retry.outputFile.lastPathComponent == "baseline-build-rule-timeout-retry.log")
         let firstJobs = try #require(first.arguments.firstIndex(of: "-jobs"))
         let retryJobs = try #require(retry.arguments.firstIndex(of: "-jobs"))
         #expect(first.arguments[first.arguments.index(after: firstJobs)] == "2")
@@ -208,15 +208,13 @@ struct XcodeExecutionTests {
         let firstDerivedData = try #require(first.arguments.firstIndex(of: "-derivedDataPath"))
         let retryDerivedData = try #require(retry.arguments.firstIndex(of: "-derivedDataPath"))
         #expect(first.arguments[first.arguments.index(after: firstDerivedData)] == retry.arguments[retry.arguments.index(after: retryDerivedData)])
-        #expect(fake.builds.filter { $0.outputFile.lastPathComponent.hasSuffix("-swiftformat-retry.log") }.count == 1)
+        #expect(fake.builds.filter { $0.outputFile.lastPathComponent.hasSuffix("-rule-timeout-retry.log") }.count == 1)
         let reportErrors = """
-        error: duplicateImports rule timed out in ShareNetworkingTests.swift.
-        error: extensionAccessControl rule timed out in WebSocketMessageDecoderUnitTest.swift.
-        error: modifiersOnSameLine rule timed out in WebSocketMessageEncoderUnitTest.swift.
-        error: redundantExtensionACL rule timed out in WebSocketChannelUnitTest.swift.
+        error: ruleOne rule timed out in FileOne.swift.
+        error: ruleTwo rule timed out in FileTwo.swift.
         """
-        #expect(XcodeMutationExecutor.failedOnlyOnSwiftFormatTimeouts(reportErrors))
-        #expect(!XcodeMutationExecutor.failedOnlyOnSwiftFormatTimeouts("error: compiler failed\nerror: duplicateImports rule timed out in File.swift"))
+        #expect(XcodeMutationExecutor.failedOnlyOnBuildRuleTimeouts(reportErrors))
+        #expect(!XcodeMutationExecutor.failedOnlyOnBuildRuleTimeouts("error: compiler failed\nerror: ruleOne rule timed out in File.swift"))
     }
 
     @Test("different baseline counts abort before any mutant runs and clean both workers")
