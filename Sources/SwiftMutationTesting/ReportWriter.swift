@@ -114,16 +114,31 @@ public enum MutationReportWriter {
             output += "- **Mutant test runs:** \(runDetails.mutantTestRunCount) (a run may stop after an active mutant is killed)\n"
             output += "- **Total time:** \(formatDuration(runDetails.totalDurationSeconds))\n\n"
         }
+        if report.summary.noCoverage > 0 && report.summary.noCoverage == report.summary.detected + report.summary.undetected {
+            output += "None of the selected tests activated a scored mutant. Test names listed per file show which tests ran, without implying that those tests covered the file.\n\n"
+        }
         if let timings = report.timings {
             output += "## Phase timings\n\n"
+            if timings.xcodeAttempts != nil {
+                output += "Xcode command times include retries. Parallel commands can overlap, so use Total time for elapsed time.\n\n"
+            }
             output += "| Phase | Seconds |\n|---|---:|\n"
             output += String(format: "| Sandbox copy | %.2f |\n", timings.sandboxCopySeconds)
             output += String(format: "| Test discovery | %.2f |\n", timings.testDiscoverySeconds)
             output += String(format: "| Source discovery | %.2f |\n", timings.sourceDiscoverySeconds)
             output += String(format: "| Input hashing | %.2f |\n", timings.inputHashSeconds)
-            output += String(format: "| Baseline | %.2f |\n", timings.baselineSeconds)
+            if let originalBuild = timings.originalBuildSeconds {
+                output += String(format: "| Original test products build | %.2f |\n", originalBuild)
+                output += String(format: "| Original unit test commands | %.2f |\n", timings.baselineSeconds)
+            } else {
+                output += String(format: "| Baseline | %.2f |\n", timings.baselineSeconds)
+            }
+            if let inactive = timings.inactiveSchemaTestSeconds {
+                output += String(format: "| Inactive schema test commands | %.2f |\n", inactive)
+            }
             output += String(format: "| Schema build | %.2f |\n", timings.schemaBuildSeconds)
-            output += String(format: "| Mutant runs | %.2f |\n", timings.mutantRunSeconds)
+            let mutantTimingLabel = timings.xcodeAttempts == nil ? "Mutant runs" : "Mutant test commands"
+            output += String(format: "| %@ | %.2f |\n", mutantTimingLabel, timings.mutantRunSeconds)
             output += String(format: "| Isolated builds | %.2f |\n", timings.isolatedBuildSeconds)
             output += String(format: "| Cleanup | %.2f |\n\n", timings.cleanupSeconds)
         }

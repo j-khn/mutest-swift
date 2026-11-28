@@ -105,7 +105,6 @@ struct XcodeWorkerTests {
             #expect(build.arguments[index + 1] == workspace.derivedData.path)
         }
         #expect(!workspace.derivedData.path.hasPrefix(root.path + "/"))
-        #expect(workspace.isolatedDerivedData(worker: 1) != workspace.isolatedDerivedData(worker: 2))
     }
 
     @Test("Xcode package paths are reused and automatic resolution can be disabled")

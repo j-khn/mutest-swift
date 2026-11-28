@@ -14,7 +14,7 @@ jobs:
   mutest-test:
     name: Build and test
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -30,3 +30,25 @@ jobs:
 
       - name: Run tests
         run: swift test --no-parallel --verbose
+
+      - name: Check out the pinned iOS integration fixture
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: j-khn/mutation-test-ios-app
+          ref: 51952bedf15a1da217bd9a985a6cf3346d390cda
+          path: .build/ios-fixture
+          persist-credentials: false
+
+      - name: Verify Xcode builds and test activation on an iOS simulator
+        run: |
+          bash Tests/Fixtures/run-xcode-reuse.sh \
+            "$(swift build --show-bin-path)/swift-mutation-testing" \
+            "$PWD/.build/ios-fixture" "$RUNNER_TEMP/mutest-xcode-artifacts"
+
+      - name: Upload the Xcode integration reports and logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutest-xcode-integration
+          path: ${{ runner.temp }}/mutest-xcode-artifacts
+          if-no-files-found: ignore

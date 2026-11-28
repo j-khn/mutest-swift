@@ -82,6 +82,12 @@ For an Xcode project or workspace, the tool asks which scheme, test scope, and s
 | `--operators NAMES` | Comma-separated: `relational`, `boolean`, `logical`, `arithmetic`, `negateConditional`, `swapTernary`, `removeSideEffects` | Limits the kinds of changes made. |
 | `--operator-tier TIER` | `experimental` (default) or `all` | Chooses the operator set. `conservative` and `default` are not available yet. |
 | `--xcodebuild-arg NAME=VALUE` | Xcode build setting; repeatable | Passes a setting to Xcode builds. |
+| `--xcode-build-jobs auto\|N` | Defaults to `2` | Sets Xcode build concurrency independently of test workers. Use `auto` to let Xcode choose. |
+| `--xcode-build-cache-dir PATH` | Optional directory outside the checkout | Reuses compiled Xcode products between runs on the same runner. |
+| `--xcode-test-plan NAME` | Optional plan in the selected scheme | Uses the named Xcode test plan. |
+| `--narrow-xcode-test-build` | Optional | Tries to build only selected test targets and their required build graph. |
+| `--xcode-code-coverage on\|off` | Uses the scheme setting by default | Overrides Xcode coverage instrumentation. Mutest still tracks mutant activation. |
+| `--xcode-build-timing-summary` | Optional | Includes Xcode's task timing summary in build logs. |
 | `--cloned-source-packages-dir PATH` | Existing Xcode `SourcePackages` directory | Reuses package checkouts from that directory. |
 | `--package-cache-path PATH` | Existing Xcode package cache directory | Reuses downloaded package and binary artifacts. |
 | `--skip-package-resolution` | Flag; Xcode projects only | Skips dependency resolution and disables automatic fetching during Xcode project builds. Requires `--cloned-source-packages-dir`. |
@@ -188,7 +194,41 @@ jobs:
           if-no-files-found: ignore
 ```
 
-`changed-and-matching` selects changed test files and test files whose names match changed source files, such as `Foo.swift` and `FooTests.swift`. This is filename matching, not a complete analysis of all tests affected by a change. All selected tests must be in the scheme's test plan. If the scope selects no test files, mutest-swift exits successfully, writes a skip report, and does not calculate a mutation score. For the full test plan, use `--test-scope all`.
+`changed-and-matching` selects changed test files and test files whose names match changed source files, such as `Foo.swift` and `FooTests.swift`. Matching uses filenames. To include a known related test file with a different name or in another target, pass `--test-file PATH` alongside the scope. Mutest does not currently derive test-to-source coverage for individual tests. All selected tests must be in the scheme's test plan. If the scope selects no test files, mutest-swift exits successfully, writes a skip report, and does not calculate a mutation score. For the full test plan, use `--test-scope all`.
+
+A Swift file stays in the change scope when its only edit is a comment,
+formatting, or a blank line. Selected tests run against the original code first
+as the mutation baseline. The same test selection is used when checking mutants.
+
+### Xcode build reuse
+
+Within a run, original, shared, and isolated builds reuse one source tree and
+DerivedData directory. Shared-schema tests can run across simulator workers.
+Isolated mutants build and test one at a time so source-relative fixtures see
+the same source tree for the entire test command.
+
+For repeated runs on a trusted Mac runner, pass `--xcode-build-cache-dir` with
+a dedicated local path outside the checkout, output and dependency caches.
+Concurrent runs that find the cache busy use a temporary workspace. The next
+run discards incomplete build state after an interrupted run. Each campaign
+builds and validates the original code again. Omit the flag to use a temporary
+workspace. `--no-cache` controls the mutation verdict journal independently.
+Keep the checkout location, explicit package directory paths, and Xcode
+toolchain stable across runs for cache reuse. The cache uses separate entries
+for different build inputs such as a changed scheme or toolchain. To reclaim
+disk space, remove the dedicated cache directory while no runs are using it.
+
+Use `--narrow-xcode-test-build` to try a smaller build graph when you select
+specific test targets or files. The shared scheme and test plan are adjusted
+only in the run's copy. Hosts and required dependencies stay in the build. If
+the shared metadata cannot be narrowed safely, the original build graph is
+used and the reason is logged.
+
+The report separates original compilation, schema compilation, isolated
+compilation, and test command times. Parallel commands can overlap. Use total
+time for elapsed time. See `logs/xcode-command-timings.json` for individual
+attempts, including retries. Use `--xcode-build-timing-summary` for Xcode's
+task breakdown in the build logs and Xcode result bundles under `build-results/`.
 
 For a runner with pre-resolved Xcode packages, add `--cloned-source-packages-dir "$HOME/Desktop/swiftpm" --package-cache-path "$HOME/Desktop/swiftpm_cache" --skip-package-resolution` to the `swift-mutation-testing run` command, using the paths on your runner.
 The checkout directory and package cache must already have the revisions pinned by the project's `Package.resolved` file and any required binary artifacts. If a checkout or artifact is missing, Xcode reports the build failure. Use per-run copies of shared caches when jobs can run at the same time. These options are for the CLI and `./run`; the reusable GitHub Action does not expose them.

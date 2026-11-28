@@ -68,6 +68,22 @@ struct CommitChangeScopeTests {
         #expect(selection.testPackageRoots == ["."])
     }
 
+    @Test("comment and blank-line edits keep Swift sources and tests selected")
+    func nonExecutableEditsStillSelectFiles() throws {
+        let repository = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: repository) }
+        try write("let value = true\n", to: "Sources/Foo.swift", in: repository)
+        try write("import Testing\n", to: "Tests/UnrelatedTests.swift", in: repository)
+        let base = try commit(repository, message: "base")
+        try write("// A comment\nlet value = true\n\n", to: "Sources/Foo.swift", in: repository)
+        try write("import Testing\n\n", to: "Tests/UnrelatedTests.swift", in: repository)
+        let head = try commit(repository, message: "comments and whitespace")
+
+        let selection = try CommitChangeScopeResolver.resolve(projectRoot: repository, sourceCommit: head, sourceBase: base, testFileSuffixes: [])
+        #expect(selection.changedSourceFiles == ["Sources/Foo.swift"])
+        #expect(selection.testFiles(for: "changed-and-matching") == ["Tests/UnrelatedTests.swift"])
+    }
+
     @Test("supports a caller-supplied matching test suffix")
     func customTestSuffix() throws {
         let repository = try makeRepository()

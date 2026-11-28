@@ -11,6 +11,7 @@ private final class FakeXcode: @unchecked Sendable {
     private(set) var maximumActiveBaselines = 0
     private(set) var attempts: [(String, String, TimeInterval)] = []
     private(set) var builds: [CommandSpec] = []
+    private(set) var buildSources: [String] = []
     private(set) var initialBuildSawBoot = false
     private(set) var maximumActiveBuilds = 0
     private var activeBuilds = 0
@@ -42,6 +43,7 @@ private final class FakeXcode: @unchecked Sendable {
         func argument(_ option: String) -> String { command.arguments.firstIndex(of: option).map { command.arguments[$0 + 1] } ?? "" }
         var output = "", exit: Int32 = 0, timeout = false
         if command.arguments.contains("build-for-testing") {
+            let buildSource = try String(contentsOf: command.workingDirectory.appendingPathComponent("Rules.swift"), encoding: .utf8)
             let initial = command.outputFile.lastPathComponent.hasPrefix("baseline-build")
             let hasBooted = simulators.snapshot().commands.contains { $0.first == "boot" }
             var shouldFailRuleTimeout = false
@@ -49,6 +51,7 @@ private final class FakeXcode: @unchecked Sendable {
             shouldFailRuleTimeout = failFirstBuildWithRuleTimeout && !didFailRuleTimeoutBuild
             if shouldFailRuleTimeout { didFailRuleTimeoutBuild = true }
             builds.append(command)
+            buildSources.append(buildSource)
             initialBuildSawBoot = initialBuildSawBoot || (initial && hasBooted)
             activeBuilds += 1; maximumActiveBuilds = max(maximumActiveBuilds, activeBuilds)
             lock.unlock()
@@ -100,23 +103,23 @@ private final class FakeXcode: @unchecked Sendable {
 
 @Suite("Xcode scheduling", .serialized)
 struct XcodeExecutionTests {
-    private func campaign(_ fake: FakeXcode, workers: Int = 2) throws -> XcodeMutationExecutionResult {
+    private func campaign(_ fake: FakeXcode, workers: Int = 2, jobs: Int? = 2) throws -> XcodeMutationExecutionResult {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("Executor \(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let source = "public func rule(_ left: Bool, _ right: Bool) -> Bool { return left && right || true }"
         try source.write(to: root.appendingPathComponent("Rules.swift"), atomically: true, encoding: .utf8)
         let config = RunConfiguration(project: .init(kind: .xcodeProject, path: "Fixture.xcodeproj", scheme: "Fixture", testTarget: "FixtureTests"), operators: [.boolean, .logical], operatorTier: "experimental", timeouts: .init(buildSeconds: 10, baselineSeconds: 10, mutantSeconds: 10), parallelism: workers)
-        let executor = XcodeMutationExecutor(configuration: config, adapter: .init(project: config.project, selection: .init()),
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("report/logs"), withIntermediateDirectories: true)
+        let executor = XcodeMutationExecutor(configuration: config, adapter: .init(project: config.project, selection: .init(), xcodeBuildOptions: .init(jobs: jobs)),
             selection: .init(identifiers: [], allTests: true), sandbox: root, output: root.appendingPathComponent("report"), sources: ["Rules.swift": source],
-            createSandbox: {
-                let path = root.appendingPathComponent("isolated-\(UUID().uuidString)")
-                try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
-                return ProjectSandbox(container: path, root: path, localPackages: [])
-            }, onVerdict: { _, _ in }, onCompletion: { _, _ in }, commandRunner: fake.run, cleanupRunner: fake.run,
+            onVerdict: { _, _ in }, onCompletion: { _, _ in }, commandRunner: fake.run, cleanupRunner: fake.run,
             workerRegistryDirectory: root.appendingPathComponent("registry"))
         let candidates = SwiftMutationGenerator().generate(source: source, relativePath: "Rules.swift", operators: [.boolean, .logical])
-        return try executor.run(template: .init(deviceType: "phone", runtime: "ios", runtimeVersion: "27", runtimeBuild: "1"), candidates: candidates, historicalDurations: [:])
+        let result = try executor.run(template: .init(deviceType: "phone", runtime: "ios", runtimeVersion: "27", runtimeBuild: "1"), candidates: candidates, historicalDurations: [:])
+        let restored = try String(contentsOf: root.appendingPathComponent("Rules.swift"), encoding: .utf8)
+        #expect(restored == source)
+        return result
     }
 
     @Test("serial and parallel workers produce identical activated verdicts")
@@ -152,7 +155,7 @@ struct XcodeExecutionTests {
         #expect(fake.simulators.snapshot().devices.count == 1)
     }
 
-    @Test("failed schemas narrow and isolated builds use independent worker roots")
+    @Test("failed schemas narrow and isolated builds reuse one builder")
     func schemaFallback() throws {
         let fake = FakeXcode(failSchema: true)
         let result = try campaign(fake)
@@ -164,10 +167,18 @@ struct XcodeExecutionTests {
         #expect(fake.maximumActiveBuilds == 1)
         let isolated = fake.builds.filter { $0.outputFile.lastPathComponent.hasPrefix("isolated-build-") }
         #expect(!isolated.isEmpty)
-        for command in isolated {
-            let index = try #require(command.arguments.firstIndex(of: "-derivedDataPath"))
-            #expect(!command.arguments[index + 1].hasPrefix(command.workingDirectory.path + "/"))
-            #expect(!FileManager.default.fileExists(atPath: command.arguments[index + 1]))
+        let first = try #require(fake.builds.first)
+        let baselineDataIndex = try #require(first.arguments.firstIndex(of: "-derivedDataPath"))
+        #expect(fake.maximumActive == 1)
+        for (index, command) in fake.builds.enumerated() where command.outputFile.lastPathComponent.hasPrefix("isolated-build-") {
+            let dataIndex = try #require(command.arguments.firstIndex(of: "-derivedDataPath"))
+            #expect(command.workingDirectory == first.workingDirectory)
+            #expect(command.arguments[dataIndex + 1] == first.arguments[baselineDataIndex + 1])
+            #expect(!FileManager.default.fileExists(atPath: command.arguments[dataIndex + 1]))
+            let id = String(command.outputFile.deletingPathExtension().lastPathComponent.dropFirst("isolated-build-".count))
+            for other in result.records.keys {
+                #expect(fake.buildSources[index].contains(other) == (other == id))
+            }
         }
     }
 
@@ -194,7 +205,10 @@ struct XcodeExecutionTests {
     @Test("Build rule timeouts retry once with one job and the same DerivedData")
     func buildRuleTimeoutRetriesSerially() throws {
         let fake = FakeXcode(failFirstBuildWithRuleTimeout: true)
-        _ = try campaign(fake, workers: 1)
+        let result = try campaign(fake, workers: 1)
+        #expect(result.timings.originalBuildSeconds == 0.10)
+        #expect(result.timings.xcodeAttempts?.filter { $0.phase == "originalBuild" }.map(\.exitCode) == [65, 0])
+        #expect(abs(result.timings.mutantRunSeconds - Double(result.mutantTestRunCount) * 0.05) < 0.0001)
 
         #expect(fake.builds.count >= 2)
         let first = fake.builds[0]
@@ -215,6 +229,15 @@ struct XcodeExecutionTests {
         """
         #expect(XcodeMutationExecutor.failedOnlyOnBuildRuleTimeouts(reportErrors))
         #expect(!XcodeMutationExecutor.failedOnlyOnBuildRuleTimeouts("error: compiler failed\nerror: ruleOne rule timed out in File.swift"))
+    }
+
+    @Test("automatic Xcode build jobs retry once with one job")
+    func autoBuildJobs() throws {
+        let fake = FakeXcode(failFirstBuildWithRuleTimeout: true)
+        _ = try campaign(fake, workers: 1, jobs: nil)
+        #expect(!fake.builds[0].arguments.contains("-jobs"))
+        let jobs = try #require(fake.builds[1].arguments.firstIndex(of: "-jobs"))
+        #expect(fake.builds[1].arguments[jobs + 1] == "1")
     }
 
     @Test("different baseline counts abort before any mutant runs and clean both workers")

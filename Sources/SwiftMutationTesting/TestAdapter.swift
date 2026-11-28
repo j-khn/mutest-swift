@@ -397,10 +397,12 @@ public struct NativeTestAdapter: Sendable {
     public var xcodebuildArguments: [String]
     public var xcodePackageOptions: XcodePackageOptions
     public var xcodeDerivedDataPath: URL?
-    public init(project: ProjectConfiguration, selection: TestSelection, xcodebuildArguments: [String] = [], xcodePackageOptions: XcodePackageOptions = .init(), xcodeDerivedDataPath: URL? = nil) {
+    public var xcodeBuildOptions: XcodeBuildOptions
+    public init(project: ProjectConfiguration, selection: TestSelection, xcodebuildArguments: [String] = [], xcodePackageOptions: XcodePackageOptions = .init(), xcodeDerivedDataPath: URL? = nil, xcodeBuildOptions: XcodeBuildOptions = .init()) {
         self.project = project; self.selection = selection; self.xcodebuildArguments = xcodebuildArguments
         self.xcodePackageOptions = xcodePackageOptions
         self.xcodeDerivedDataPath = xcodeDerivedDataPath
+        self.xcodeBuildOptions = xcodeBuildOptions
     }
 
     public func command(root: URL, phase: TestPhase, resolved: ResolvedTestSelection, environment: [String: String], timeout: TimeInterval, output: URL, scratchPath: URL? = nil, stopOnActivatedTestFailure: Bool = false, activationID: String? = nil, activationFile: URL? = nil, xcodeContext: XcodeTestExecutionContext? = nil) throws -> CommandSpec {
@@ -451,14 +453,18 @@ public struct NativeTestAdapter: Sendable {
             }
             let destination = xcodeContext?.destination ?? project.destination
             if phase == .buildForTesting || phase == .baseline {
-                // Worker count controls tests, not Xcode's independent build scheduler.
-                args += ["-jobs", "2"]
+                if let jobs = xcodeBuildOptions.jobs { args += ["-jobs", String(jobs)] }
+                if xcodeBuildOptions.buildTimingSummary { args.append("-showBuildTimingSummary") }
+                if let coverage = xcodeBuildOptions.codeCoverage {
+                    args += ["-enableCodeCoverage", coverage ? "YES" : "NO"]
+                }
             }
             if phase == .testWithoutBuilding, let manifest = xcodeContext?.testRunFile {
                 args += ["-xctestrun", manifest.path]
             } else {
                 args += project.kind == .xcodeWorkspace ? ["-workspace", projectPath] : ["-project", projectPath]
                 args += ["-scheme", scheme]
+                if let plan = xcodeBuildOptions.testPlan { args += ["-testPlan", plan] }
                 args += xcodePackageOptions.commandLineArguments(defaultClonedSourcePackagesDirectory: nil, resolvingDependencies: false)
                 args += xcodebuildArguments
                 args += XcodeSimulatorBuildSettings.defaults(for: xcodebuildArguments, destination: destination)

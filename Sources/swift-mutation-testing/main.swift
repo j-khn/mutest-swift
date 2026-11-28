@@ -33,6 +33,7 @@ enum SwiftMutationTestingCLI {
                 _ = try applyCommitScope(arguments, to: &configuration)
                 _ = try xcodebuildArguments(arguments, projectKind: configuration.project.kind)
                 _ = try xcodePackageOptions(arguments, projectKind: configuration.project.kind)
+                _ = try xcodeBuildOptions(arguments, projectKind: configuration.project.kind)
                 try validate(configuration)
                 print("Configuration valid. Project: \(configuration.project.kind.rawValue) at \(configuration.project.path)")
                 return
@@ -49,8 +50,9 @@ enum SwiftMutationTestingCLI {
             }
             let buildSettings = try xcodebuildArguments(arguments, projectKind: configuration.project.kind)
             let packageOptions = try xcodePackageOptions(arguments, projectKind: configuration.project.kind)
+            let buildOptions = try xcodeBuildOptions(arguments, projectKind: configuration.project.kind)
             let runStartedAt = Date()
-            let report = try MutationEngine(xcodebuildArguments: buildSettings, xcodePackageOptions: packageOptions).run(configuration: configuration, outputDirectory: output)
+            let report = try MutationEngine(xcodebuildArguments: buildSettings, xcodePackageOptions: packageOptions, xcodeBuildOptions: buildOptions).run(configuration: configuration, outputDirectory: output)
             let runDuration = Date().timeIntervalSince(runStartedAt)
             let score = report.summary.score.map { String(format: "%.1f%%", $0 * 100) } ?? "n/a"
             print("Mutation score: \(score) · killed \(report.summary.killed) · survived \(report.summary.survived) · no coverage \(report.summary.noCoverage) · timeout \(report.summary.timedOut) · unbuildable \(report.summary.unbuildable)")
@@ -76,7 +78,7 @@ enum SwiftMutationTestingCLI {
             "--config", "--project", "--project-kind", "--mutation-source", "--source", "--test-file", "--target-file",
             "--test-suite", "--suite", "--test-name", "--target-tests", "--test", "--scheme", "--test-target", "--target", "--test-package-root",
             "--source-commit", "--source-base", "--source-scope", "--test-scope", "--test-file-suffix",
-            "--destination", "--destination-simulator", "--xcodebuild-arg", "--cloned-source-packages-dir", "--package-cache-path", "--operators", "--operator-tier", "--build-timeout",
+            "--destination", "--destination-simulator", "--xcodebuild-arg", "--xcode-build-jobs", "--xcode-build-cache-dir", "--xcode-test-plan", "--xcode-code-coverage", "--cloned-source-packages-dir", "--package-cache-path", "--operators", "--operator-tier", "--build-timeout",
             "--baseline-timeout", "--mutant-timeout", "--parallelism", "--workers", "--output", "--cache-path", "--minimum-score",
             "--maximum-score-drop", "--maximum-integrity-warnings", "--baseline-report"
         ]
@@ -90,7 +92,7 @@ enum SwiftMutationTestingCLI {
             "--destination-simulator": "--destination",
             "--workers": "--parallelism",
         ]
-        let flagOptions: Set<String> = ["--no-resume", "--no-cache", "--no-suppressions", "--require-suppression-reason", "--fail-on-new-survivors", "--skip-package-resolution", "--help", "-h"]
+        let flagOptions: Set<String> = ["--narrow-xcode-test-build", "--xcode-build-timing-summary", "--no-resume", "--no-cache", "--no-suppressions", "--require-suppression-reason", "--fail-on-new-survivors", "--skip-package-resolution", "--help", "-h"]
         var index = 1
         while index < arguments.count {
             let option = arguments[index]
@@ -268,6 +270,12 @@ enum SwiftMutationTestingCLI {
         let testDescription = testScope == "all" ? "full configured test plan" : (testScope == "affected-packages" ? "affected package test targets" : "\(selectedTestFiles.count) selected test files")
         cliLog("Selected scope: \(sourceDescription); \(testDescription)\(configuration.project.testPackageRoots.isEmpty ? "" : "; package roots: \(configuration.project.testPackageRoots.joined(separator: ", "))").")
 
+        for file in selectedTestFiles {
+            var reasons: [String] = []
+            if testScope != "matching", selection.changedTestFiles.contains(file) { reasons.append("changed") }
+            if testScope != "changed", selection.matchingTestFiles.contains(file) { reasons.append("filename match") }
+            cliLog("Selected unit test file: \(file) (\(reasons.joined(separator: ", "))).")
+        }
         return nil
     }
 
@@ -318,6 +326,32 @@ enum SwiftMutationTestingCLI {
         } catch {
             throw CLIError.usage("Invalid Xcode package options: \(error)")
         }
+        return options
+    }
+
+    static func xcodeBuildOptions(_ arguments: Arguments, projectKind: ProjectKind) throws -> XcodeBuildOptions {
+        let jobs = arguments.first("--xcode-build-jobs")
+        let cache = arguments.first("--xcode-build-cache-dir")
+        let plan = arguments.first("--xcode-test-plan")
+        let narrow = arguments.flags.contains("--narrow-xcode-test-build")
+        let timing = arguments.flags.contains("--xcode-build-timing-summary")
+        let coverage = arguments.first("--xcode-code-coverage")
+        if let coverage, coverage != "on" && coverage != "off" {
+            throw CLIError.usage("--xcode-code-coverage must be on or off.")
+        }
+        if projectKind == .swiftPackage && (jobs != nil || cache != nil || plan != nil || narrow || timing || coverage != nil) {
+            throw CLIError.usage("Xcode build options require an Xcode project or workspace.")
+        }
+        if cache?.isEmpty == true { throw CLIError.usage("--xcode-build-cache-dir requires a directory path.") }
+        let options = XcodeBuildOptions(
+            jobs: jobs == "auto" ? nil : try integer(jobs ?? "2", name: "--xcode-build-jobs"),
+            cacheDirectory: cache.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL },
+            narrowTestBuild: narrow,
+            testPlan: plan,
+            buildTimingSummary: timing,
+            codeCoverage: coverage.map { $0 == "on" }
+        )
+        try options.validate(for: projectKind)
         return options
     }
 
@@ -378,9 +412,15 @@ enum SwiftMutationTestingCLI {
       --test-file-suffix SUFFIX       Filename suffix after a changed source name (default: Tests.swift); repeatable
       --destination-simulator VALUE  iOS Simulator for Xcode tests, e.g. platform=iOS Simulator,name=iPhone 17,OS=latest
       --xcodebuild-arg NAME=VALUE    Xcode build setting; repeatable
+      --xcode-build-jobs auto|N      Xcode build jobs, independent of test workers (default: 2)
+      --xcode-build-cache-dir PATH   Opt in to a dedicated compiled Xcode build cache
+      --xcode-test-plan NAME         Xcode test plan in the selected scheme
+      --narrow-xcode-test-build     Try narrowing a shared scheme to selected test targets
+      --xcode-code-coverage on|off  Override the scheme’s build coverage setting
+      --xcode-build-timing-summary  Include Xcode build timing summaries in build logs
       --cloned-source-packages-dir PATH  Use an existing Xcode SourcePackages directory
       --package-cache-path PATH     Use an existing Xcode Swift package cache
-      --skip-package-resolution     Skip resolution and prevent automatic fetches during project builds
+      --skip-package-resolution     Skip the resolution step and enforce resolved package versions in Xcode
 
     Code to mutate:
       --mutation-source PATH         Production Swift file/folder; repeat once per path

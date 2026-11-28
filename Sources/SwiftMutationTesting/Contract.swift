@@ -278,7 +278,17 @@ public struct QualityGateResult: Codable, Sendable {
     public var failures: [String]
 }
 
-/// Wall-clock phase durations emitted by native engines for performance analysis.
+public struct XcodeCommandAttempt: Codable, Sendable {
+    public var phase: String
+    public var log: String
+    public var worker: Int
+    public var seconds: Double
+    public var exitCode: Int32
+    public var timedOut: Bool
+    public var startedAtUptime: Double?
+}
+
+/// Phase durations emitted by native engines for performance analysis.
 public struct MutationTimings: Codable, Sendable {
     public var sandboxCopySeconds: Double
     public var testDiscoverySeconds: Double
@@ -289,6 +299,9 @@ public struct MutationTimings: Codable, Sendable {
     public var mutantRunSeconds: Double
     public var isolatedBuildSeconds: Double
     public var cleanupSeconds: Double
+    public var originalBuildSeconds: Double?
+    public var inactiveSchemaTestSeconds: Double?
+    public var xcodeAttempts: [XcodeCommandAttempt]?
 
     public init(sandboxCopySeconds: Double = 0, testDiscoverySeconds: Double = 0, sourceDiscoverySeconds: Double = 0, inputHashSeconds: Double = 0, baselineSeconds: Double = 0, schemaBuildSeconds: Double = 0, mutantRunSeconds: Double = 0, isolatedBuildSeconds: Double = 0, cleanupSeconds: Double = 0) {
         self.sandboxCopySeconds = sandboxCopySeconds

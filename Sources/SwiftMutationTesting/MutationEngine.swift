@@ -207,13 +207,15 @@ private final class LockedJournal: @unchecked Sendable {
 public struct MutationEngine: Sendable {
     private let xcodebuildArguments: [String]
     private let xcodePackageOptions: XcodePackageOptions
-    public init(xcodebuildArguments: [String] = [], xcodePackageOptions: XcodePackageOptions = .init()) {
+    private let xcodeBuildOptions: XcodeBuildOptions
+    public init(xcodebuildArguments: [String] = [], xcodePackageOptions: XcodePackageOptions = .init(), xcodeBuildOptions: XcodeBuildOptions = .init()) {
         self.xcodebuildArguments = xcodebuildArguments
         self.xcodePackageOptions = xcodePackageOptions
+        self.xcodeBuildOptions = xcodeBuildOptions
     }
 
     public func run(configuration: RunConfiguration, outputDirectory: URL? = nil) throws -> MutationReport {
-        let runStartedAt = Date()
+        let runStartedAt = ProcessInfo.processInfo.systemUptime
         let runMetrics = MutationRunMetrics()
         let projectURL = URL(fileURLWithPath: configuration.project.path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
         let root = configuration.project.kind == .swiftPackage ? projectURL : projectURL.deletingLastPathComponent()
@@ -222,6 +224,7 @@ public struct MutationEngine: Sendable {
         if configuration.project.kind != .swiftPackage { adapterProject.path = projectURL.lastPathComponent }
         try validate(configuration: configuration, root: root, projectURL: projectURL)
         try xcodePackageOptions.validate(for: configuration.project.kind)
+        try xcodeBuildOptions.validate(for: configuration.project.kind)
         let configuredOutput = configuration.output.directory.map {
             URL(fileURLWithPath: $0, relativeTo: root).standardizedFileURL
         }
@@ -254,13 +257,12 @@ public struct MutationEngine: Sendable {
         mutationLog("Dependency manifests inspected in \(String(format: "%.1f", Date().timeIntervalSince(dependencyDiscoveryStarted)))s.")
         let sandboxCopyStarted = Date()
         mutationLog("Creating isolated project sandbox…")
-        let sandboxLayout = try makeSandbox(
+        let stagedSandbox = try makeSandbox(
             from: root,
             localPackageRoots: dependencyGraph.localPackages,
             into: output.appendingPathComponent("sandboxes", isDirectory: true),
             excluding: [output] + (cacheDirectory.map { [$0] } ?? [])
         )
-        let sandbox = sandboxLayout.root
         timings.sandboxCopySeconds = Date().timeIntervalSince(sandboxCopyStarted)
         mutationLog("Project sandbox ready in \(String(format: "%.1f", timings.sandboxCopySeconds))s.")
         var auxiliarySandboxContainers: [URL] = []
@@ -268,7 +270,7 @@ public struct MutationEngine: Sendable {
         defer {
             if !sandboxRemoved {
                 auxiliarySandboxContainers.forEach { try? FileManager.default.removeItem(at: $0) }
-                try? FileManager.default.removeItem(at: sandboxLayout.container)
+                try? FileManager.default.removeItem(at: stagedSandbox.container)
             }
         }
         let testDiscoveryStarted = Date()
@@ -296,14 +298,58 @@ public struct MutationEngine: Sendable {
             testScopeLabel = "full scheme test plan"
         }
         mutationLog("Test discovery complete: \(selection.identifiers.count) selected test identifiers (\(testScopeLabel)).")
-        let xcodeBuildWorkspace = configuration.project.kind == .swiftPackage ? nil : try XcodeBuildWorkspace()
+        let xcodeBuildWorkspace: XcodeBuildWorkspace?
+        if configuration.project.kind != .swiftPackage, let cache = xcodeBuildOptions.cacheDirectory {
+            let cache = cache.standardizedFileURL.resolvingSymlinksInPath()
+            let inputs = [root, output] + dependencyGraph.localPackages +
+                [xcodePackageOptions.clonedSourcePackagesDirectory, xcodePackageOptions.packageCachePath].compactMap { $0 }
+            guard inputs.allSatisfy({ url in
+                let url = url.standardizedFileURL.resolvingSymlinksInPath()
+                return !isWithin(cache, root: url) && !isWithin(url, root: cache)
+            }) else {
+                throw ContractError.invalidConfiguration("Use a dedicated compiled build cache directory outside the checkout, local packages, report output and package caches.")
+            }
+            let version = try ProcessRunner().run(.init(executable: "/usr/bin/xcrun", arguments: ["xcodebuild", "-version"],
+                workingDirectory: root, timeout: 30, outputFile: logs.appendingPathComponent("xcode-version.log")))
+            guard !version.timedOut, version.exitCode == 0 else {
+                throw MutationEngineError.invalidProject("Could not identify Xcode for the compiled build cache. Log: \(version.outputFile.path)")
+            }
+            let packages = xcodePackageOptions.commandLineArguments(defaultClonedSourcePackagesDirectory: nil, resolvingDependencies: false)
+            let environment = ProcessInfo.processInfo.environment
+            let key = [projectURL.resolvingSymlinksInPath().path, adapterProject.scheme ?? "", xcodeBuildOptions.testPlan ?? "",
+                       simulatorTemplate?.fingerprint ?? adapterProject.destination ?? "", version.output,
+                       xcodeBuildOptions.codeCoverage.map { String($0) } ?? "",
+                       environment["DEVELOPER_DIR"] ?? "", environment["TOOLCHAINS"] ?? "",
+                       environment["SDKROOT"] ?? "", environment["XCODE_XCCONFIG_FILE"] ?? "",
+                       xcodeBuildOptions.narrowTestBuild ? selection.targets.sorted().joined(separator: "|") : "",
+                       dependencyGraph.localPackages.map(\.path).sorted().joined(separator: "\n")] + packages + xcodebuildArguments
+            xcodeBuildWorkspace = try XcodeBuildWorkspace.open(cache: cache, key: String(decoding: JSONEncoder().encode(key), as: UTF8.self))
+        } else {
+            xcodeBuildWorkspace = configuration.project.kind == .swiftPackage ? nil : try XcodeBuildWorkspace()
+        }
         defer { xcodeBuildWorkspace?.cleanup() }
+        let prepareStarted = ProcessInfo.processInfo.systemUptime
+        // Narrow the staged copy before syncing it so a warm cache retains the
+        // effective scheme and plan with their existing modification times.
+        if xcodeBuildOptions.narrowTestBuild {
+            if let reason = try XcodeTestBuildScope.narrow(project: adapterProject, sandbox: stagedSandbox,
+                    targets: Set(selection.targets), testPlan: xcodeBuildOptions.testPlan) {
+                mutationLog("Using the original Xcode build graph because \(reason).")
+            } else {
+                mutationLog("Narrowed the Xcode test build to: \(selection.targets.joined(separator: ", ")). Required hosts and dependencies remain in the build graph.")
+            }
+        }
+        let sandboxLayout = try xcodeBuildWorkspace?.prepare(stagedSandbox, logs: logs,
+            timeout: TimeInterval(configuration.timeouts.buildSeconds)) ?? stagedSandbox
+        let sandbox = sandboxLayout.root
+        timings.sandboxCopySeconds += ProcessInfo.processInfo.systemUptime - prepareStarted
         let adapter = NativeTestAdapter(
             project: adapterProject,
             selection: configuration.tests,
             xcodebuildArguments: xcodebuildArguments,
             xcodePackageOptions: xcodePackageOptions,
-            xcodeDerivedDataPath: xcodeBuildWorkspace?.derivedData
+            xcodeDerivedDataPath: xcodeBuildWorkspace?.derivedData,
+            xcodeBuildOptions: xcodeBuildOptions
         )
         let runner = ProcessRunner()
         if xcodePackageOptions.shouldResolveDependencies {
@@ -391,7 +437,13 @@ public struct MutationEngine: Sendable {
         let inputHashStarted = Date()
         let dependencyInputs = packageDependencyInputFiles(graph: dependencyGraph, projectRoot: root)
             + resolvedDependencyInputFiles(in: sandboxLayout)
-        let inputDigest = try digestInputs(root: root, files: sourceFiles, configuration: digestConfiguration, xcodebuildArguments: xcodebuildArguments, xcodePackageOptions: xcodePackageOptions, excluding: [output, journalDirectory], runtimeFingerprint: simulatorTemplate?.fingerprint ?? "", additionalFiles: dependencyInputs)
+        var verdictBuildArguments = xcodebuildArguments
+        if let plan = xcodeBuildOptions.testPlan { verdictBuildArguments.append("mutest:test-plan=" + plan) }
+        if let coverage = xcodeBuildOptions.codeCoverage { verdictBuildArguments.append("mutest:code-coverage=" + String(coverage)) }
+        if xcodeBuildOptions.narrowTestBuild { verdictBuildArguments.append("mutest:narrow-test-build") }
+        let inputDigest = try digestInputs(root: root, files: sourceFiles, configuration: digestConfiguration,
+            xcodebuildArguments: verdictBuildArguments, xcodePackageOptions: xcodePackageOptions, excluding: [output, journalDirectory],
+            runtimeFingerprint: simulatorTemplate?.fingerprint ?? "", additionalFiles: dependencyInputs)
         timings.inputHashSeconds = Date().timeIntervalSince(inputHashStarted)
         let journal = journalDirectory.appendingPathComponent("journal.jsonl")
         let cached = configuration.cache.enabled ? loadJournal(at: journal) : []
@@ -441,7 +493,6 @@ public struct MutationEngine: Sendable {
             let lockedJournal = configuration.cache.enabled ? LockedJournal(url: journal) : nil
             let executor = XcodeMutationExecutor(configuration: configuration, adapter: adapter, selection: selection,
                 sandbox: sandbox, output: output, sources: sources, buildWorkspace: xcodeBuildWorkspace,
-                createSandbox: { try self.makeSandbox(from: sandbox, localPackageRoots: sandboxLayout.localPackages, into: output.appendingPathComponent("sandboxes/isolated-workers"), excluding: []) },
                 onVerdict: { record, warnings in
                     try lockedJournal?.append(.init(cacheKey: inputDigest + ":" + record.id, record: record, warnings: warnings))
                 }, onCompletion: { candidate, status in progress.recordCompletion(candidate: candidate, status: status) })
@@ -450,6 +501,10 @@ public struct MutationEngine: Sendable {
             records.merge(completed.records) { _, new in new }
             warnings += completed.warnings
             timings.baselineSeconds += completed.timings.baselineSeconds
+            timings.originalBuildSeconds = completed.timings.originalBuildSeconds
+            timings.inactiveSchemaTestSeconds = completed.timings.inactiveSchemaTestSeconds
+            timings.xcodeAttempts = completed.timings.xcodeAttempts
+            timings.sandboxCopySeconds += completed.timings.sandboxCopySeconds
             timings.schemaBuildSeconds += completed.timings.schemaBuildSeconds
             timings.mutantRunSeconds += completed.timings.mutantRunSeconds
             timings.isolatedBuildSeconds += completed.timings.isolatedBuildSeconds
@@ -871,7 +926,7 @@ public struct MutationEngine: Sendable {
         )
         let cleanupStarted = Date()
         auxiliarySandboxContainers.forEach { try? FileManager.default.removeItem(at: $0) }
-        try? FileManager.default.removeItem(at: sandboxLayout.container)
+        try? FileManager.default.removeItem(at: stagedSandbox.container)
         sandboxRemoved = true
         timings.cleanupSeconds += Date().timeIntervalSince(cleanupStarted)
         let report = MutationReport(scope: .init(sources: selectedSources, tests: selection.identifiers, allTests: selection.allTests, testTargets: selection.targets), mutants: orderedRecords, integrityWarnings: warnings, qualityGate: gate, timings: timings)
@@ -880,7 +935,7 @@ public struct MutationEngine: Sendable {
             testTarget: selection.targets.isEmpty ? nil : selection.targets.joined(separator: ", "),
             baselineTestCount: xcodeExecution?.baselineCounts.first ?? runMetricsSnapshot.baselineTestCount,
             mutantTestRunCount: xcodeExecution?.mutantTestRunCount ?? runMetricsSnapshot.mutantTestRunCount,
-            totalDurationSeconds: Date().timeIntervalSince(runStartedAt),
+            totalDurationSeconds: ProcessInfo.processInfo.systemUptime - runStartedAt,
             requestedWorkerCount: configuration.parallelism,
             activeWorkerCount: xcodeExecution?.workerCount ?? executionConcurrency(root: root, projectKind: configuration.project.kind, requested: configuration.parallelism, candidateCount: remaining.count),
             baselineRunCount: xcodeExecution?.baselineRunCount ?? 1,
@@ -891,6 +946,7 @@ public struct MutationEngine: Sendable {
             simulatorSetupSeconds: xcodeExecution?.simulatorSetupSeconds ?? 0
         )
         try MutationReportWriter.write(report, to: output, formats: Set(configuration.output.formats), runDetails: runDetails)
+        try xcodeBuildWorkspace?.markComplete()
         return report
     }
 

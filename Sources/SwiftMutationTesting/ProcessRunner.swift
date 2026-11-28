@@ -179,7 +179,7 @@ public struct ProcessRunner: Sendable {
         defer { environmentPointers.forEach { free($0) } }
         var envp: [UnsafeMutablePointer<CChar>?] = environmentPointers.map { Optional($0) } + [nil]
         var pid = pid_t(0)
-        let started = Date()
+        let started = ProcessInfo.processInfo.systemUptime
         let spawnStatus = command.executable.withCString { executable in
             argv.withUnsafeMutableBufferPointer { argvBuffer in
                 envp.withUnsafeMutableBufferPointer { envBuffer in
@@ -232,7 +232,7 @@ public struct ProcessRunner: Sendable {
                     break
                 }
             }
-            if Date().timeIntervalSince(started) >= command.timeout || isCancellationRequested {
+            if ProcessInfo.processInfo.systemUptime - started >= command.timeout || isCancellationRequested {
                 timedOut = !isCancellationRequested
                 terminateProcessGroup(pid, status: &status)
                 break
@@ -248,7 +248,7 @@ public struct ProcessRunner: Sendable {
         if (status & 0x7f) == 0 { exitCode = (status >> 8) & 0xff }
         else { exitCode = 128 + (status & 0x7f) }
         let data = (try? Data(contentsOf: command.outputFile)) ?? Data()
-        return CommandResult(exitCode: exitCode, timedOut: timedOut, elapsed: Date().timeIntervalSince(started), output: String(decoding: data, as: UTF8.self), outputFile: command.outputFile, stoppedEarly: stoppedEarly)
+        return CommandResult(exitCode: exitCode, timedOut: timedOut, elapsed: ProcessInfo.processInfo.systemUptime - started, output: String(decoding: data, as: UTF8.self), outputFile: command.outputFile, stoppedEarly: stoppedEarly)
     }
 
     private func terminateProcessGroup(_ pid: pid_t, status: inout Int32) {

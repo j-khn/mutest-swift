@@ -15,6 +15,10 @@ private final class XcodeExecutionState: @unchecked Sendable {
     private var mutantTestRuns: [MutantTestRunDetails] = []
     private var isolatedBuildSeconds: TimeInterval = 0
     private var resultBundles: [URL] = []
+    private var attempts: [XcodeCommandAttempt] = []
+
+    func recordAttempt(_ attempt: XcodeCommandAttempt) { lock.lock(); attempts.append(attempt); lock.unlock() }
+    func commandAttempts() -> [XcodeCommandAttempt] { lock.lock(); defer { lock.unlock() }; return attempts }
 
     func resultBundle(_ url: URL) { lock.lock(); resultBundles.append(url); lock.unlock() }
     func removeResultBundles() {
@@ -77,7 +81,6 @@ final class XcodeMutationExecutor: @unchecked Sendable {
     private let sandbox: URL
     private let output: URL
     private let sources: [String: String]
-    private let createSandbox: @Sendable () throws -> ProjectSandbox
     private let onVerdict: @Sendable (MutantRecord, [IntegrityWarning]) throws -> Void
     private let onCompletion: @Sendable (MutationCandidate, MutantStatus) -> Void
     private let state = XcodeExecutionState()
@@ -85,11 +88,9 @@ final class XcodeMutationExecutor: @unchecked Sendable {
     private let cleanupRunner: XcodeCommandRunner
     private let workerRegistryDirectory: URL?
     private let buildWorkspace: XcodeBuildWorkspace?
-    private let buildLock = NSLock()
 
     init(configuration: RunConfiguration, adapter: NativeTestAdapter, selection: ResolvedTestSelection,
          sandbox: URL, output: URL, sources: [String: String], buildWorkspace: XcodeBuildWorkspace? = nil,
-         createSandbox: @escaping @Sendable () throws -> ProjectSandbox,
          onVerdict: @escaping @Sendable (MutantRecord, [IntegrityWarning]) throws -> Void,
          onCompletion: @escaping @Sendable (MutationCandidate, MutantStatus) -> Void,
          commandRunner: @escaping XcodeCommandRunner = { try ProcessRunner().run($0) },
@@ -97,7 +98,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
          workerRegistryDirectory: URL? = nil) {
         self.configuration = configuration; self.adapter = adapter; self.selection = selection
         self.sandbox = sandbox; self.output = output; self.sources = sources
-        self.createSandbox = createSandbox; self.onVerdict = onVerdict; self.onCompletion = onCompletion
+        self.onVerdict = onVerdict; self.onCompletion = onCompletion
         self.commandRunner = commandRunner; self.cleanupRunner = cleanupRunner
         self.workerRegistryDirectory = workerRegistryDirectory
         self.buildWorkspace = buildWorkspace
@@ -113,21 +114,25 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         var cleaned = false
         // Xcode may finish writing result attachments after an attempt returns.
         // Sweep this campaign's bundles again after worker teardown to catch late files.
-        defer { state.removeResultBundles() }
         defer {
-            for worker in pool.workers {
-                if let container = worker.isolatedContainer { try? FileManager.default.removeItem(at: container) }
-                else if let root = worker.isolatedRoot { try? FileManager.default.removeItem(at: root) }
+            state.removeResultBundles()
+            do {
+                let data = try JSONEncoder().encode(state.commandAttempts())
+                try data.write(to: log("xcode-command-timings").deletingPathExtension().appendingPathExtension("json"), options: .atomic)
+            } catch {
+                mutationLog("Could not save the Xcode command timing log: \(error)")
             }
         }
         defer { if !cleaned { for warning in pool.cleanup() { mutationLog(warning.message) } } }
         var timings = MutationTimings()
         let builderData = workspace.derivedData
-        mutationLog("Building original test products while simulator workers start; Xcode builds use at most 2 jobs. Build files are outside the source tree.")
+        let jobs = adapter.xcodeBuildOptions.jobs.map(String.init) ?? "automatic"
+        mutationLog("Building original test products while simulators start. Xcode build jobs: \(jobs).")
+        try XcodeTestArtifacts.removeGeneratedManifests(derivedData: builderData)
         // Always establish a baseline from the caller's original sources. An inactive
         // schema can compile yet change timing or behavior, so it is not a valid baseline.
         let original = try build(root: sandbox, derivedData: builderData, worker: pool.workers[0], label: "baseline-build")
-        timings.schemaBuildSeconds += original.elapsed
+        timings.originalBuildSeconds = original.elapsed
         guard !original.timedOut, original.exitCode == 0 else {
             throw MutationEngineError.baselineBuildFailed(log: original.outputFile, timedOut: original.timedOut)
         }
@@ -149,10 +154,9 @@ final class XcodeMutationExecutor: @unchecked Sendable {
             try schema.source.write(to: sandbox.appendingPathComponent(path), atomically: true, encoding: .utf8)
         }
         mutationLog("Schema plan: \(schemaCandidates.count) shared-schema mutants; \(isolatedCandidates.count) require separate builds.")
-        let initialBuild = try build(root: sandbox, derivedData: builderData, worker: pool.workers[0], label: "schema-build")
-        timings.schemaBuildSeconds += initialBuild.elapsed
-        let schemaFailed = initialBuild.timedOut || initialBuild.exitCode != 0
-        let mutationStartedAt = Date()
+        let initialBuild = schemaCandidates.isEmpty ? nil :
+            try build(root: sandbox, derivedData: builderData, worker: pool.workers[0], label: "schema-build")
+        timings.schemaBuildSeconds += initialBuild?.elapsed ?? 0
         let ordered = candidates.sorted {
             let left = historicalDurations[$0.id] ?? 0, right = historicalDurations[$1.id] ?? 0
             return left == right ? $0.id < $1.id : left > right
@@ -167,7 +171,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
             try restoreSources(in: sandbox)
             try XcodeTestArtifacts.removeGeneratedManifests(derivedData: builderData)
             let rebuild = try build(root: sandbox, derivedData: builderData, worker: pool.workers[0], label: "baseline-recheck-build")
-            timings.schemaBuildSeconds += rebuild.elapsed
+            timings.originalBuildSeconds = (timings.originalBuildSeconds ?? 0) + rebuild.elapsed
             guard !rebuild.timedOut, rebuild.exitCode == 0 else {
                 throw MutationEngineError.baselineBuildFailed(log: rebuild.outputFile, timedOut: rebuild.timedOut)
             }
@@ -253,9 +257,9 @@ final class XcodeMutationExecutor: @unchecked Sendable {
                     }
                     throw MutationEngineError.invalidProject("Inactive schema baseline was unstable: one run failed and the retry passed. No mutation score was produced. First failure: \(failure.log.path)")
                 }
-                if !diagnosingInactive { try executeBatch(sorted(batch), pool: pool, isolated: false) }
+                if !diagnosingInactive { try executeBatch(sorted(batch), pool: pool) }
         }
-        if !schemaFailed {
+        if let initialBuild, !initialBuild.timedOut, initialBuild.exitCode == 0 {
             let snapshotsStarted = Date()
             try snapshotWorkers(pool: pool, derivedData: builderData)
             timings.sandboxCopySeconds += Date().timeIntervalSince(snapshotsStarted)
@@ -269,21 +273,26 @@ final class XcodeMutationExecutor: @unchecked Sendable {
                 }
                 throw MutationEngineError.invalidProject("Inactive schema baseline was unstable: one run failed and the retry passed. No mutation score was produced. First failure: \(failure.log.path)")
             }
-            try executeBatch(sorted(schemaCandidates), pool: pool, isolated: false)
-        } else {
+            try executeBatch(sorted(schemaCandidates), pool: pool)
+        } else if let initialBuild {
             try narrowed(sorted(schemaCandidates), afterFailure: .init(output: initialBuild.output, log: initialBuild.outputFile, timedOut: initialBuild.timedOut))
         }
         if !isolatedCandidates.isEmpty {
             try restoreSources(in: sandbox)
-            for worker in pool.workers {
-                let copy = try createSandbox()
-                worker.isolatedRoot = copy.root
-                worker.isolatedContainer = copy.container
-                try restoreSources(in: copy.root)
+            mutationLog("Reusing the original Xcode builder for isolated mutants. Each isolated test run finishes before the next source edit.")
+            let worker = pool.workers[0]
+            for candidate in sorted(isolatedCandidates) {
+                try checkErrors()
+                let outcome = try execute(candidate, worker: worker, pool: pool, retry: false, isolatedDerivedData: builderData)
+                try finish(candidate, record: outcome.record, warnings: outcome.warnings)
             }
-            try executeBatch(sorted(isolatedCandidates), pool: pool, isolated: true, buildWorkspace: workspace)
         }
-        timings.mutantRunSeconds = Date().timeIntervalSince(mutationStartedAt)
+        try restoreSources(in: sandbox)
+        let attempts = state.commandAttempts()
+        timings.xcodeAttempts = attempts
+        timings.mutantRunSeconds = attempts.filter { $0.phase == "mutantTest" }.reduce(0) { $0 + $1.seconds }
+        timings.inactiveSchemaTestSeconds = attempts.filter { $0.phase == "inactiveSchemaTest" }.reduce(0) { $0 + $1.seconds }
+        timings.baselineSeconds = attempts.filter { $0.phase == "originalTest" }.reduce(0) { $0 + $1.seconds }
         let completed = state.snapshot()
         timings.isolatedBuildSeconds = completed.isolatedBuildSeconds
         let cleanupStarted = Date()
@@ -302,27 +311,53 @@ final class XcodeMutationExecutor: @unchecked Sendable {
     }
 
     private func build(root: URL, derivedData: URL, worker: XcodeSimulatorWorker, label: String) throws -> CommandResult {
-        // Independent worker build folders prevent build-lock conflicts. Serialize
-        // expensive builds so multiple cold plugin/compiler graphs cannot compete.
-        buildLock.lock(); defer { buildLock.unlock() }
         if ProcessRunner.cancellationRequested { throw ProcessRunnerError.cancelled }
         mutationLog("Building Xcode test products: \(label)")
         let command = try adapter.command(root: root, phase: .buildForTesting, resolved: selection, environment: [:],
             timeout: TimeInterval(configuration.timeouts.buildSeconds), output: log(label),
-            xcodeContext: .init(destination: worker.destination, derivedDataPath: derivedData))
-        let result = try commandRunner(command)
+            xcodeContext: .init(destination: worker.destination, derivedDataPath: derivedData,
+                                resultBundlePath: try buildResultBundle(label)))
+        let phase = label.hasPrefix("baseline-") ? "originalBuild" :
+            (label.hasPrefix("isolated-") ? "isolatedBuild" : "schemaBuild")
+        var result = try runRecorded(command, phase: phase, worker: worker)
+        let jobsIndex = command.arguments.firstIndex(of: "-jobs")
         guard !result.timedOut, result.exitCode != 0,
               Self.failedOnlyOnBuildRuleTimeouts(result.output),
-              let jobsIndex = command.arguments.firstIndex(of: "-jobs"),
-              command.arguments.index(after: jobsIndex) < command.arguments.endIndex,
-              command.arguments[command.arguments.index(after: jobsIndex)] != "1"
+              jobsIndex.map({ command.arguments[$0 + 1] != "1" }) ?? true
         else { return result }
 
         mutationLog("Xcode build rules timed out during \(label); retrying once with one build job and the same DerivedData cache.")
         var retry = command
-        retry.arguments[retry.arguments.index(after: jobsIndex)] = "1"
-        retry.outputFile = log("\(label)-rule-timeout-retry")
-        return try commandRunner(retry)
+        if let jobsIndex {
+            retry.arguments[jobsIndex + 1] = "1"
+        } else {
+            retry.arguments += ["-jobs", "1"]
+        }
+        let retryLabel = "\(label)-rule-timeout-retry"
+        retry.outputFile = log(retryLabel)
+        if let index = retry.arguments.firstIndex(of: "-resultBundlePath"), let bundle = try buildResultBundle(retryLabel) {
+            retry.arguments[index + 1] = bundle.path
+        }
+        let firstElapsed = result.elapsed
+        result = try runRecorded(retry, phase: phase, worker: worker)
+        result.elapsed += firstElapsed
+        return result
+    }
+
+    private func buildResultBundle(_ label: String) throws -> URL? {
+        guard adapter.xcodeBuildOptions.buildTimingSummary else { return nil }
+        let directory = output.appendingPathComponent("build-results", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("\(label)-\(UUID().uuidString).xcresult")
+    }
+
+    private func runRecorded(_ command: CommandSpec, phase: String, worker: XcodeSimulatorWorker) throws -> CommandResult {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let result = try commandRunner(command)
+        state.recordAttempt(.init(phase: phase, log: result.outputFile.lastPathComponent, worker: worker.number,
+                                  seconds: result.elapsed, exitCode: result.exitCode, timedOut: result.timedOut,
+                                  startedAtUptime: startedAt))
+        return result
     }
 
     static func failedOnlyOnBuildRuleTimeouts(_ output: String) -> Bool {
@@ -394,7 +429,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         }
     }
 
-    private func executeBatch(_ candidates: [MutationCandidate], pool: XcodeSimulatorPool, isolated: Bool, buildWorkspace: XcodeBuildWorkspace? = nil) throws {
+    private func executeBatch(_ candidates: [MutationCandidate], pool: XcodeSimulatorPool) throws {
         guard !candidates.isEmpty else { return }
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = pool.workers.count
@@ -406,7 +441,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
                 do {
                     if state.hasError { return }
                     if ProcessRunner.cancellationRequested { throw ProcessRunnerError.cancelled }
-                    let outcome = try execute(candidate, worker: worker, pool: pool, isolated: isolated, retry: false, buildWorkspace: buildWorkspace)
+                    let outcome = try execute(candidate, worker: worker, pool: pool, retry: false)
                     if outcome.record.status == .timeout && pool.workers.count > 1 && configuration.timeouts.parallelRetry {
                         state.retry(candidate, record: outcome.record)
                     } else { try finish(candidate, record: outcome.record, warnings: outcome.warnings) }
@@ -420,40 +455,50 @@ final class XcodeMutationExecutor: @unchecked Sendable {
             defer { pool.release(worker) }
             mutationLog("Retrying timed-out mutant \(candidate.id) alone with \(configuration.timeouts.retryMultiplier)x timeout.")
             try pool.reset(worker)
-            var outcome = try execute(candidate, worker: worker, pool: pool, isolated: isolated, retry: true, buildWorkspace: buildWorkspace)
+            var outcome = try execute(candidate, worker: worker, pool: pool, retry: true)
             outcome.record.durationSeconds = (outcome.record.durationSeconds ?? 0) + (state.snapshot().records[candidate.id]?.durationSeconds ?? 0)
             outcome.record.message = "Timed out in parallel; retried in isolation with \(configuration.timeouts.retryMultiplier)x timeout. " + (outcome.record.message ?? "")
             try finish(candidate, record: outcome.record, warnings: outcome.warnings)
         }
     }
 
-    private func execute(_ candidate: MutationCandidate, worker: XcodeSimulatorWorker, pool: XcodeSimulatorPool, isolated: Bool, retry: Bool, buildWorkspace: XcodeBuildWorkspace?) throws -> (record: MutantRecord, warnings: [IntegrityWarning]) {
-        var buildSeconds: TimeInterval = 0
-        if isolated {
-            guard let root = worker.isolatedRoot, let source = sources[candidate.source] else { throw MutationEngineError.invalidProject("Missing isolated worker source.") }
-            let file = root.appendingPathComponent(candidate.source)
-            defer { try? source.write(to: file, atomically: true, encoding: .utf8) }
+    private func execute(_ candidate: MutationCandidate, worker: XcodeSimulatorWorker, pool: XcodeSimulatorPool, retry: Bool, isolatedDerivedData: URL? = nil) throws -> (record: MutantRecord, warnings: [IntegrityWarning]) {
+        if let derivedData = isolatedDerivedData {
+            guard let source = sources[candidate.source] else { throw MutationEngineError.invalidProject("Missing isolated mutant source.") }
+            let file = sandbox.appendingPathComponent(candidate.source)
             try SwiftMutationGenerator().makeIsolatedSchema(source: source, candidate: candidate).write(to: file, atomically: true, encoding: .utf8)
-            guard let buildWorkspace else { throw MutationEngineError.invalidProject("Missing isolated Xcode build workspace.") }
-            let derivedData = buildWorkspace.isolatedDerivedData(worker: worker.number)
-            let build = try self.build(root: root, derivedData: derivedData, worker: worker, label: "isolated-build-\(candidate.id)-\(retry)")
-            buildSeconds = build.elapsed
-            state.isolatedBuild(buildSeconds)
-            if build.timedOut || build.exitCode != 0 {
-                var record = candidate.record
-                record.status = .unbuildable; record.durationSeconds = buildSeconds
-                record.message = "Isolated mutant build \(build.timedOut ? "timed out" : "failed"); see \(build.outputFile.path)."
-                return (record, [])
+            let outcome = Result {
+                let build = try self.build(root: sandbox, derivedData: derivedData, worker: worker, label: "isolated-build-\(candidate.id)")
+                let buildSeconds = build.elapsed
+                state.isolatedBuild(buildSeconds)
+                if build.timedOut || build.exitCode != 0 {
+                    var record = candidate.record
+                    record.status = .unbuildable; record.durationSeconds = buildSeconds
+                    record.message = "Isolated mutant build \(build.timedOut ? "timed out" : "failed"); see \(build.outputFile.path)."
+                    return (record: record, warnings: [IntegrityWarning]())
+                }
+                try snapshot(worker: worker, derivedData: derivedData)
+                return try runMutantTests(candidate, worker: worker, pool: pool, retry: retry, buildSeconds: buildSeconds, canRetryInParallel: false)
             }
-            try snapshot(worker: worker, derivedData: derivedData)
+            do {
+                try source.write(to: file, atomically: true, encoding: .utf8)
+            } catch {
+                throw MutationEngineError.invalidProject("Could not restore the original source after the isolated build: \(file.path). \(error)")
+            }
+            return try outcome.get()
         }
+        return try runMutantTests(candidate, worker: worker, pool: pool, retry: retry, buildSeconds: 0, canRetryInParallel: true)
+    }
+
+    private func runMutantTests(_ candidate: MutationCandidate, worker: XcodeSimulatorWorker, pool: XcodeSimulatorPool, retry: Bool,
+                                buildSeconds: TimeInterval, canRetryInParallel: Bool) throws -> (record: MutantRecord, warnings: [IntegrityWarning]) {
         let timeout = TimeInterval(configuration.timeouts.mutantSeconds) * (retry ? configuration.timeouts.retryMultiplier : 1)
         var result = try runTests(worker: worker, mutantID: candidate.id, source: candidate.source, timeout: timeout,
                                   label: "\(retry ? "retry-isolated" : "mutant")-\(candidate.id)")
         var activated = result.output.contains("SWIFT_MUTATION_ACTIVATED:\(candidate.id)")
         var firstUnactivatedFailureLog: URL?
         var firstUnactivatedFailureSummary: String?
-        let parallelTimeoutWillRetry = !retry && result.timedOut && pool.workers.count > 1 && configuration.timeouts.parallelRetry
+        let parallelTimeoutWillRetry = canRetryInParallel && !retry && result.timedOut && pool.workers.count > 1 && configuration.timeouts.parallelRetry
         if !retry, !activated, (result.timedOut || result.exitCode != 0), !parallelTimeoutWillRetry {
             // A flaky test outside the mutated code must not be mistaken for a kill,
             // and a timed-out test host can leave the simulator in a bad state. Retry
@@ -530,13 +575,15 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         let bundle = mutantID.map { _ in output.appendingPathComponent("results/\(label)-\(UUID().uuidString).xcresult") }
         if let bundle { state.resultBundle(bundle) }
         defer { if let bundle { try? FileManager.default.removeItem(at: bundle) } }
-        let command = try adapter.command(root: worker.isolatedRoot ?? sandbox, phase: .testWithoutBuilding,
+        let command = try adapter.command(root: sandbox, phase: .testWithoutBuilding,
             resolved: selection, environment: [:], timeout: timeout, output: log(label),
             stopOnActivatedTestFailure: mutantID != nil && artifacts.canStopEarlyAfterActivatedFailure, activationID: mutantID,
             xcodeContext: .init(destination: worker.destination, derivedDataPath: worker.directory.appendingPathComponent("DerivedData"), testRunFile: manifest, resultBundlePath: bundle))
-        let result = try commandRunner(command)
+        let phase = mutantID != nil ? "mutantTest" :
+            (label.hasPrefix("inactive-schema-") ? "inactiveSchemaTest" : "originalTest")
+        let result = try runRecorded(command, phase: phase, worker: worker)
         if let mutantID, let bundle {
-            let testCases = try XcodeTestResultReader.readCases(from: bundle, relativeTo: worker.isolatedRoot ?? sandbox)
+            let testCases = try XcodeTestResultReader.readCases(from: bundle, relativeTo: sandbox)
             state.testRun(.init(mutantId: mutantID, source: source ?? "<unknown>",
                                 reportedCaseCount: TestExecutionCount.parse(result.output), testCases: testCases))
         }
@@ -579,6 +626,7 @@ final class XcodeMutationExecutor: @unchecked Sendable {
         for (path, source) in sources {
             let destination = root.appendingPathComponent(path)
             try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if (try? Data(contentsOf: destination)) == Data(source.utf8) { continue }
             try source.write(to: destination, atomically: true, encoding: .utf8)
         }
     }
