@@ -339,8 +339,7 @@ public struct MutationEngine: Sendable {
                 mutationLog("Narrowed the Xcode test build to: \(selection.targets.joined(separator: ", ")). Required hosts and dependencies remain in the build graph.")
             }
         }
-        let sandboxLayout = try xcodeBuildWorkspace?.prepare(stagedSandbox, logs: logs,
-            timeout: TimeInterval(configuration.timeouts.buildSeconds)) ?? stagedSandbox
+        let sandboxLayout = try xcodeBuildWorkspace?.prepare(stagedSandbox) ?? stagedSandbox
         let sandbox = sandboxLayout.root
         timings.sandboxCopySeconds += ProcessInfo.processInfo.systemUptime - prepareStarted
         let adapter = NativeTestAdapter(

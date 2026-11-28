@@ -97,25 +97,71 @@ final class XcodeBuildWorkspace: @unchecked Sendable {
         return workspace
     }
 
-    func prepare(_ staged: ProjectSandbox, logs: URL, timeout: TimeInterval) throws -> ProjectSandbox {
+    func prepare(_ staged: ProjectSandbox) throws -> ProjectSandbox {
         guard lockDescriptor != nil else { return staged }
-        let files = FileManager.default
-        try files.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
-        // Compare content so same-sized edits are detected, and preserve times
-        // for unchanged inputs. New writes get a fresh mtime for Xcode.
-        let command = CommandSpec(executable: "/usr/bin/rsync",
-            arguments: ["-rlpc", "--delete", staged.container.path + "/", sourceDirectory.path + "/"],
-            workingDirectory: staged.container, timeout: timeout,
-            outputFile: logs.appendingPathComponent("build-cache-sync.log"))
-        let result = try ProcessRunner().run(command)
-        guard !result.timedOut, result.exitCode == 0 else {
-            throw MutationEngineError.invalidProject("Could not synchronize the compiled Xcode build cache. Log: \(result.outputFile.path)")
+        do {
+            try syncDirectory(from: staged.container, to: sourceDirectory)
+        } catch ProcessRunnerError.cancelled {
+            throw ProcessRunnerError.cancelled
+        } catch {
+            throw MutationEngineError.invalidProject("Could not synchronize the compiled Xcode build cache at \(sourceDirectory.path): \(error)")
         }
         func relocate(_ url: URL) -> URL {
             let relative = PackageDependencyResolver.relativePath(url, to: staged.container)
             return relative.isEmpty ? sourceDirectory : sourceDirectory.appendingPathComponent(relative)
         }
         return ProjectSandbox(container: sourceDirectory, root: relocate(staged.root), localPackages: staged.localPackages.map(relocate))
+    }
+
+    private func syncDirectory(from source: URL, to destination: URL) throws {
+        let files = FileManager.default
+        try files.createDirectory(at: destination, withIntermediateDirectories: true)
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
+        let inputs = try files.contentsOfDirectory(at: source, includingPropertiesForKeys: Array(keys))
+        let existing = try files.contentsOfDirectory(at: destination, includingPropertiesForKeys: Array(keys))
+        let names = Set(inputs.map(\.lastPathComponent))
+        var previousFiles: [String: URL] = [:]
+        for file in existing {
+            if names.contains(file.lastPathComponent) { previousFiles[file.lastPathComponent] = file }
+            else { try files.removeItem(at: file) }
+        }
+        for input in inputs {
+            if ProcessRunner.cancellationRequested { throw ProcessRunnerError.cancelled }
+            let previous = previousFiles[input.lastPathComponent]
+            let path = destination.appendingPathComponent(input.lastPathComponent)
+            let kind = try input.resourceValues(forKeys: keys)
+            let oldKind = try previous?.resourceValues(forKeys: keys)
+            if kind.isSymbolicLink == true {
+                let link = try files.destinationOfSymbolicLink(atPath: input.path)
+                if oldKind?.isSymbolicLink == true, try files.destinationOfSymbolicLink(atPath: path.path) == link { continue }
+                if let previous { try files.removeItem(at: previous) }
+                try files.createSymbolicLink(atPath: path.path, withDestinationPath: link)
+            } else if kind.isDirectory == true {
+                if let previous, oldKind?.isDirectory != true || oldKind?.isSymbolicLink == true {
+                    try files.removeItem(at: previous)
+                }
+                try syncDirectory(from: input, to: path)
+            } else if kind.isRegularFile == true {
+                if oldKind?.isRegularFile == true, oldKind?.isSymbolicLink != true,
+                   files.contentsEqual(atPath: input.path, andPath: path.path) {
+                    // Leave unchanged file times alone, including when an ordinary
+                    // checkout rewrites the whole source tree between CI runs.
+                    let required = try files.attributesOfItem(atPath: input.path)[.posixPermissions] as? NSNumber
+                    let actual = try files.attributesOfItem(atPath: path.path)[.posixPermissions] as? NSNumber
+                    if let required, required != actual {
+                        try files.setAttributes([.posixPermissions: required], ofItemAtPath: path.path)
+                    }
+                    continue
+                }
+                if let previous { try files.removeItem(at: previous) }
+                try files.copyItem(at: input, to: path)
+                // touch only replaced files, even when the checkout supplies the
+                // same mtime and size for different versions of a file.
+                try files.setAttributes([.modificationDate: Date()], ofItemAtPath: path.path)
+            } else {
+                throw MutationEngineError.invalidProject("Unsupported file in Xcode cache inputs: \(input.path)")
+            }
+        }
     }
 
     func markComplete() throws {

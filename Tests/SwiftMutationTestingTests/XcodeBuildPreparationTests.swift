@@ -35,7 +35,6 @@ struct XcodeBuildPreparationTests {
         #expect(other.directory != cache)
     }
 
-    #if os(macOS)
     @Test("warm cache sync detects same-size edits, deletes stale files, and preserves unchanged times")
     func synchronizeSources() throws {
         let root = try temporaryDirectory()
@@ -52,9 +51,11 @@ struct XcodeBuildPreparationTests {
         let cache = root.appendingPathComponent("cache")
         let staged = ProjectSandbox(container: input, root: input, localPackages: [])
         let first = try XcodeBuildWorkspace.open(cache: cache, key: "compatible")
-        let original = try first.prepare(staged, logs: root, timeout: 30)
+        let original = try first.prepare(staged)
         let persistentUnchanged = original.root.appendingPathComponent("Unchanged.swift")
         try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1000)], ofItemAtPath: persistentUnchanged.path)
+        let before = try FileManager.default.attributesOfItem(atPath: persistentUnchanged.path)[.modificationDate] as? Date
+        #expect(before == Date(timeIntervalSince1970: 1000))
         try first.markComplete()
         first.cleanup()
 
@@ -62,14 +63,13 @@ struct XcodeBuildPreparationTests {
         try FileManager.default.removeItem(at: deleted)
         let second = try XcodeBuildWorkspace.open(cache: cache, key: "compatible")
         defer { second.cleanup() }
-        let updated = try second.prepare(staged, logs: root, timeout: 30)
+        let updated = try second.prepare(staged)
         #expect(updated.root == original.root)
         #expect(try Data(contentsOf: updated.root.appendingPathComponent("A.swift")) == Data("nil ".utf8))
         #expect(!FileManager.default.fileExists(atPath: updated.root.appendingPathComponent("Delete.swift").path))
-        let date = try persistentUnchanged.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        let date = try FileManager.default.attributesOfItem(atPath: persistentUnchanged.path)[.modificationDate] as? Date
         #expect(date == Date(timeIntervalSince1970: 1000))
     }
-    #endif
 
     @Test("scope removes unrelated test roots and preserves host, variables and coverage")
     func narrowBuildGraph() throws {
