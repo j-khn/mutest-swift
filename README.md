@@ -159,7 +159,7 @@ jobs:
           trap 'rm -rf "$tool_dir"' EXIT
           git -C "$tool_dir" init --quiet
           git -C "$tool_dir" remote add origin https://github.com/j-khn/mutest-swift.git
-          git -C "$tool_dir" fetch --depth 1 origin refs/tags/v0.3.9
+          git -C "$tool_dir" fetch --depth 1 origin refs/tags/v0.3.10
           git -C "$tool_dir" checkout --quiet --detach FETCH_HEAD
           swift build --package-path "$tool_dir" --product swift-mutation-testing
           bin_dir="$(swift build --package-path "$tool_dir" --show-bin-path)"
@@ -313,11 +313,11 @@ Maintainers publish releases from the **Signed release** workflow on `main`. Cho
 After downloading the archive and checksum into the same directory, verify them with:
 
 ```sh
-shasum -a 256 -c mutest-swift-v0.3.9.tar.gz.sha256
-gh attestation verify mutest-swift-v0.3.9.tar.gz --owner j-khn
+shasum -a 256 -c mutest-swift-v0.3.10.tar.gz.sha256
+gh attestation verify mutest-swift-v0.3.10.tar.gz --owner j-khn
 ```
 
-To verify the signed tag, fetch it and run `git tag -v v0.3.9` in a clone of the repository.
+To verify the signed tag, fetch it and run `git tag -v v0.3.10` in a clone of the repository.
 
 ## License
 
