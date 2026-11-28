@@ -89,6 +89,10 @@ inputs:
     description: Xcode build setting in NAME=VALUE form, one per line
     required: false
     default: ""
+  full-xcode-test-build:
+    description: Build the full Xcode scheme even when selecting specific tests
+    required: false
+    default: "false"
   operator-tier:
     description: experimental or all; conservative and default are unavailable until operators have campaign data
     required: false
@@ -209,6 +213,7 @@ runs:
         INPUT_DESTINATION_SIMULATOR: ${{ inputs.destination-simulator }}
         INPUT_DESTINATION: ${{ inputs.destination }}
         INPUT_XCODEBUILD_ARG: ${{ inputs.xcodebuild-arg }}
+        INPUT_FULL_XCODE_TEST_BUILD: ${{ inputs.full-xcode-test-build }}
         INPUT_OPERATOR_TIER: ${{ inputs.operator-tier }}
         INPUT_OPERATORS: ${{ inputs.operators }}
         INPUT_WORKERS: ${{ inputs.workers }}
@@ -295,6 +300,7 @@ runs:
         [[ -n "$destination" ]] && args+=(--destination-simulator "$destination")
         [[ -n "$INPUT_OPERATORS" ]] && args+=(--operators "$INPUT_OPERATORS")
         while IFS= read -r value; do [[ -n "$value" ]] && args+=(--xcodebuild-arg "$value"); done <<< "$INPUT_XCODEBUILD_ARG"
+        [[ "$INPUT_FULL_XCODE_TEST_BUILD" == "true" ]] && args+=(--full-xcode-test-build)
         [[ -n "$INPUT_MINIMUM_SCORE" ]] && args+=(--minimum-score "$INPUT_MINIMUM_SCORE")
         [[ -n "$INPUT_BASELINE_REPORT" ]] && args+=(--baseline-report "$INPUT_BASELINE_REPORT")
         [[ -n "$INPUT_MAXIMUM_SCORE_DROP" ]] && args+=(--maximum-score-drop "$INPUT_MAXIMUM_SCORE_DROP")

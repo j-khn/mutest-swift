@@ -262,6 +262,7 @@ The repository also provides a reusable GitHub Action for environments that perm
 | `operator-tier` | `experimental` (default) or `all` | Chooses the operator set. `conservative` and `default` are not available yet. |
 | `workers` | Positive number; default `2` | Maximum number of concurrent mutants; matches `--workers`. |
 | `xcodebuild-arg` | One `NAME=VALUE` per line | Extra Xcode build settings. |
+| `full-xcode-test-build` | Defaults to `false` | Set to `true` to build the full Xcode scheme for scoped tests. |
 | `cache-path` | Folder; blank uses default locations | Sets where reusable results and the CLI build cache are stored. |
 | `no-cache`, `no-resume` | `true` or `false`; default `false` | Disables cache use or resuming prior results. |
 | `no-suppressions`, `require-suppression-reason` | `true` or `false`; default `false` | Controls mutation suppression comments. |
